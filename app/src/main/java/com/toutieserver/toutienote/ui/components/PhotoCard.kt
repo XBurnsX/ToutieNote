@@ -15,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
@@ -35,10 +36,16 @@ fun PhotoCard(
     photo: Photo,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    isDragging: Boolean = false,
 ) {
+    val elevation by androidx.compose.animation.core.animateDpAsState(
+        if (isDragging) 8.dp else 0.dp,
+        label = "drag_elevation"
+    )
     Box(
         modifier = Modifier
             .aspectRatio(1f)
+            .shadow(elevation, RoundedCornerShape(8.dp))
             .background(Surface2Color)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         contentAlignment = Alignment.Center,
@@ -50,8 +57,9 @@ fun PhotoCard(
         AsyncImage(
             model = ImageRequest.Builder(context)
                 .data(ApiService.photoUrl(photo.thumbnailUrl))
-                .memoryCachePolicy(CachePolicy.DISABLED)
-                .diskCachePolicy(CachePolicy.DISABLED)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .diskCachePolicy(CachePolicy.ENABLED)
+                .crossfade(150)
                 .build(),
             contentDescription = photo.filename,
             contentScale = ContentScale.Crop,

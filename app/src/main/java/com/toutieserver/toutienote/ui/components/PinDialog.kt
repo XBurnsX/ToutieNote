@@ -23,7 +23,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.toutieserver.toutienote.ui.theme.*
 
-enum class PinMode { SETUP, VERIFY }
+enum class PinMode { SETUP, VERIFY, CHANGE }
 
 @Composable
 fun PinDialog(
@@ -32,10 +32,13 @@ fun PinDialog(
     onDismiss: () -> Unit,
     onVerify: (String, () -> Unit, () -> Unit) -> Unit,
     onSetup: (String, () -> Unit) -> Unit,
+    onChangePin: ((String, String, () -> Unit, () -> Unit) -> Unit)? = null,
 ) {
     var pin by remember { mutableStateOf("") }
     var firstPin by remember { mutableStateOf("") }
+    var oldPin by remember { mutableStateOf("") }
     var isConfirming by remember { mutableStateOf(false) }
+    var changeStep by remember { mutableIntStateOf(0) } // 0=old, 1=new, 2=confirm
     var error by remember { mutableStateOf("") }
     var shakeIt by remember { mutableStateOf(false) }
 
@@ -48,8 +51,17 @@ fun PinDialog(
         label = "shake"
     )
 
-    val title = if (mode == PinMode.SETUP) "NOUVEAU PIN" else "VAULT"
+    val title = when {
+        mode == PinMode.CHANGE -> "MODIFIER LE PIN"
+        mode == PinMode.SETUP -> "NOUVEAU PIN"
+        else -> "VAULT"
+    }
     val subtitle = when {
+        mode == PinMode.CHANGE -> when (changeStep) {
+            0 -> "Entre ton PIN actuel"
+            1 -> "Nouveau PIN (4 chiffres)"
+            else -> "Confirme ton PIN"
+        }
         mode == PinMode.VERIFY -> "Entre ton PIN"
         isConfirming -> "Confirme ton PIN"
         else -> "Crée ton PIN (4 chiffres)"
@@ -61,6 +73,13 @@ fun PinDialog(
         shakeIt = true
         pin = ""
         if (isConfirming) { firstPin = ""; isConfirming = false }
+        if (mode == PinMode.CHANGE) {
+            when {
+                msg.contains("incorrect") && changeStep == 2 -> { firstPin = ""; oldPin = ""; changeStep = 0 }
+                changeStep == 2 -> { firstPin = ""; changeStep = 1 }
+                changeStep > 0 -> { firstPin = ""; oldPin = ""; changeStep = 0 }
+            }
+        }
     }
 
     fun handlePin(newPin: String) {
@@ -75,6 +94,16 @@ fun PinDialog(
                 } else {
                     if (newPin == firstPin) onSetup(newPin, onSuccess)
                     else triggerError("PINs pas identiques")
+                }
+            }
+            PinMode.CHANGE -> {
+                when (changeStep) {
+                    0 -> { oldPin = newPin; pin = ""; changeStep = 1 }
+                    1 -> { firstPin = newPin; pin = ""; changeStep = 2 }
+                    else -> {
+                        if (newPin == firstPin) onChangePin?.invoke(oldPin, firstPin, onSuccess) { triggerError("PIN incorrect") }
+                        else triggerError("PINs pas identiques")
+                    }
                 }
             }
         }

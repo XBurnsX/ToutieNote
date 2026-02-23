@@ -97,6 +97,19 @@ class VaultViewModel : ViewModel() {
         }
     }
 
+    fun changePin(oldPin: String, newPin: String, onSuccess: () -> Unit, onFail: () -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                ApiService.changePin(oldPin, newPin)
+                _message.value = "PIN modifié ✓"
+                kotlinx.coroutines.withContext(Dispatchers.Main) { onSuccess() }
+            } catch (e: Exception) {
+                _error.value = "Erreur: ${e.message}"
+                kotlinx.coroutines.withContext(Dispatchers.Main) { onFail() }
+            }
+        }
+    }
+
     // ── Albums ─────────────────────────────────────────────────
     fun loadAlbums() {
         viewModelScope.launch(Dispatchers.IO) {
@@ -199,6 +212,19 @@ class VaultViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             try { ApiService.reorderAlbums(list.map { it.id }) }
             catch (_: Exception) { }
+        }
+    }
+
+    fun reorderPhotos(albumId: String, newOrder: List<Photo>) {
+        _photos.value = newOrder
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                ApiService.reorderPhotos(albumId, newOrder.map { it.id })
+                _message.value = "Ordre mis à jour ✓"
+            } catch (e: Exception) {
+                _error.value = "Erreur réordre: ${e.message}"
+                _photos.value = ApiService.getPhotos(albumId)
+            }
         }
     }
 

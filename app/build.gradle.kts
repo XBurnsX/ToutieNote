@@ -66,6 +66,9 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.6.0")
     implementation("io.coil-kt:coil-video:2.6.0")
 
+    // Reorderable (drag & drop)
+    implementation("sh.calvin.reorderable:reorderable:3.0.0")
+
     implementation("androidx.appcompat:appcompat:1.7.0")
 
     // Crop (Cropify - Compose-native, stable)
@@ -78,4 +81,6 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation("androidx.test:core:1.6.0")
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
 }

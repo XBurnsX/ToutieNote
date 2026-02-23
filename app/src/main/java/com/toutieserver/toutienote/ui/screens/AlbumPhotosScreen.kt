@@ -15,10 +15,15 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.ui.platform.LocalHapticFeedback
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.rememberReorderableLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -37,6 +42,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.toutieserver.toutienote.data.models.Album
 import com.toutieserver.toutienote.data.models.Photo
 import com.toutieserver.toutienote.ui.components.PhotoCard
+import androidx.compose.material.icons.filled.DragIndicator
 import com.toutieserver.toutienote.ui.theme.*
 import com.toutieserver.toutienote.viewmodels.VaultViewModel
 import java.io.File
@@ -306,21 +312,53 @@ fun AlbumPhotosScreen(
                     }
                 }
                 else -> {
-                    val sortedPhotos = remember(photos) { photos }
+                    val hapticFeedback = LocalHapticFeedback.current
+                    val lazyGridState = rememberLazyGridState()
+                    val reorderableLazyGridState = rememberReorderableLazyGridState(lazyGridState) { from, to ->
+                        val newOrder = photos.toMutableList().apply {
+                            add(to.index, removeAt(from.index))
+                        }
+                        vm.reorderPhotos(album.id, newOrder)
+                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                    }
 
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(3),
+                        state = lazyGridState,
                         contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(2.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        items(sortedPhotos, key = { it.id }) { photo ->
-                            PhotoCard(
-                                photo = photo,
-                                onClick = { onPhotoClick(photo) },
-                                onLongClick = { showOptionsSheet = photo }
-                            )
+                        items(photos, key = { it.id }) { photo ->
+                            ReorderableItem(reorderableLazyGridState, key = photo.id) { isDragging ->
+                                Box(modifier = Modifier.fillMaxWidth()) {
+                                    PhotoCard(
+                                        photo = photo,
+                                        onClick = { onPhotoClick(photo) },
+                                        onLongClick = { showOptionsSheet = photo },
+                                        isDragging = isDragging
+                                    )
+                                    IconButton(
+                                        modifier = Modifier
+                                            .align(Alignment.TopStart)
+                                            .size(32.dp)
+                                            .draggableHandle(
+                                                onDragStarted = {
+                                                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                }
+                                            ),
+                                        onClick = {}
+                                    ) {
+                                        Icon(
+                                            Icons.Default.DragIndicator,
+                                            contentDescription = "Réordonner",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }

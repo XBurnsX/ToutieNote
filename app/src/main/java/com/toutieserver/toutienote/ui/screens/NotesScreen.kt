@@ -134,8 +134,18 @@ fun NotesScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Text("NOTES", fontFamily = FontFamily.Monospace,
-                        fontSize = 13.sp, color = MutedColor, letterSpacing = 3.sp)
+                    Box(
+                        modifier = Modifier
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = { onSecretTap() }
+                            )
+                            .padding(vertical = 8.dp, horizontal = 4.dp)
+                    ) {
+                        Text("NOTES", fontFamily = FontFamily.Monospace,
+                            fontSize = 13.sp, color = MutedColor, letterSpacing = 3.sp)
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceColor),
             )
@@ -252,17 +262,6 @@ fun NotesScreen(
                     }
                 }
 
-                val interactionSource = remember { MutableInteractionSource() }
-                Box(
-                    modifier = Modifier
-                        .size(60.dp)
-                        .align(Alignment.BottomEnd)
-                        .clickable(
-                            interactionSource = interactionSource,
-                            indication = null,
-                            onClick = { onSecretTap() }
-                        )
-                )
             }
         }
     }

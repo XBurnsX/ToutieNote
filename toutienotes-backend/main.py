@@ -54,8 +54,19 @@ def init_db():
     """)
     db.execute("""
         CREATE TABLE IF NOT EXISTS vault_config (
-            key   TEXT PRIMARY KEY,
-            value TEXT
+            user_id TEXT NOT NULL,
+            key     TEXT NOT NULL,
+            value   TEXT,
+            PRIMARY KEY (user_id, key)
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id            TEXT PRIMARY KEY,
+            username      TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            token         TEXT,
+            created_at    TEXT NOT NULL
         )
     """)
     db.execute("""
@@ -113,6 +124,18 @@ class PinSetup(BaseModel):
 class PinVerify(BaseModel):
     pin: str
 
+class PinChange(BaseModel):
+    old_pin: str
+    new_pin: str
+
+class AuthRegister(BaseModel):
+    username: str
+    password: str
+
+class AuthLogin(BaseModel):
+    username: str
+    password: str
+
 class CropParams(BaseModel):
     x: int
     y: int
@@ -133,6 +156,9 @@ class AlbumLock(BaseModel):
 
 class AlbumReorder(BaseModel):
     album_ids: list
+
+class PhotoReorder(BaseModel):
+    photo_ids: list
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def hash_pin(pin: str) -> str:
@@ -334,6 +360,18 @@ def reset_pin(data: PinVerify):
     set_config("vault_pin", None)
     return {"ok": True}
 
+@app.post("/api/vault/change-pin")
+def change_pin(data: PinChange):
+    stored = get_config("vault_pin")
+    if stored is None:
+        raise HTTPException(400, "PIN pas encore configuré")
+    if hash_pin(data.old_pin) != stored:
+        raise HTTPException(401, "PIN actuel incorrect")
+    if len(data.new_pin) != 4 or not data.new_pin.isdigit():
+        raise HTTPException(400, "Nouveau PIN doit être 4 chiffres")
+    set_config("vault_pin", hash_pin(data.new_pin))
+    return {"ok": True}
+
 # ══════════════════════════════════════════════════════════════════════════════
 # VAULT — ALBUMS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -440,6 +478,15 @@ def update_album_cover(album_id: str, data: AlbumCoverUpdate):
 # ══════════════════════════════════════════════════════════════════════════════
 # VAULT — PHOTOS
 # ══════════════════════════════════════════════════════════════════════════════
+
+@app.put("/api/vault/albums/{album_id}/photos/reorder")
+def reorder_photos(album_id: str, data: PhotoReorder):
+    db = get_db()
+    for i, pid in enumerate(data.photo_ids):
+        db.execute("UPDATE photos SET sort_order=? WHERE id=? AND album_id=?", (i, pid, album_id))
+    db.commit()
+    db.close()
+    return {"ok": True}
 
 @app.get("/api/vault/photos")
 def list_photos(album_id: str = None):

@@ -53,6 +53,7 @@ fun AlbumsListScreen(
     var showRenameDialog by remember { mutableStateOf<Album?>(null) }
     var showLockDialog by remember { mutableStateOf<Album?>(null) }
     var showUnlockDialog by remember { mutableStateOf<Album?>(null) }
+    var showChangePinDialog by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) { vm.loadAlbums() }
@@ -208,6 +209,20 @@ fun AlbumsListScreen(
         )
     }
 
+    // Change vault PIN dialog
+    if (showChangePinDialog) {
+        PinDialog(
+            mode = PinMode.CHANGE,
+            onSuccess = { showChangePinDialog = false },
+            onDismiss = { showChangePinDialog = false },
+            onVerify = { _, _, _ -> },
+            onSetup = { _, _ -> },
+            onChangePin = { oldPin, newPin, onSuccess, onFail ->
+                vm.changePin(oldPin, newPin, onSuccess, onFail)
+            },
+        )
+    }
+
     // Options bottom sheet
     showOptionsSheet?.let { album ->
         ModalBottomSheet(
@@ -353,6 +368,7 @@ fun AlbumsListScreen(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceColor),
                 actions = {
+                    var showMenu by remember { mutableStateOf(false) }
                     IconButton(onClick = onDuplicates) {
                         Icon(Icons.Default.ContentCopy, "Doublons", tint = AccentColor)
                     }
@@ -362,6 +378,28 @@ fun AlbumsListScreen(
                             contentDescription = "Nouvel album",
                             tint = AccentColor
                         )
+                    }
+                    Box {
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(
+                                Icons.Default.MoreVert,
+                                contentDescription = "Options",
+                                tint = MutedColor
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false },
+                            modifier = Modifier.background(SurfaceColor)
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Modifier le PIN", color = TextColor) },
+                                onClick = {
+                                    showChangePinDialog = true
+                                    showMenu = false
+                                }
+                            )
+                        }
                     }
                 }
             )

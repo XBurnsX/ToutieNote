@@ -102,6 +102,16 @@ object ApiService {
         } catch (e: Exception) { false }
     }
 
+    fun changePin(oldPin: String, newPin: String) {
+        val json = JSONObject()
+            .put("old_pin", oldPin)
+            .put("new_pin", newPin)
+            .toString()
+        val req = okhttp3.Request.Builder().url("$base/api/vault/change-pin")
+            .post(json.toRequestBody(JSON)).build()
+        executeForOk(req)
+    }
+
     // ── Vault Albums ───────────────────────────────────────────
     fun getAlbums(): List<Album> {
         val req = okhttp3.Request.Builder().url("$base/api/vault/albums").get().build()
@@ -188,6 +198,14 @@ object ApiService {
         val arr = org.json.JSONArray(albumIds)
         val json = JSONObject().put("album_ids", arr).toString()
         val req = okhttp3.Request.Builder().url("$base/api/vault/albums/reorder")
+            .put(json.toRequestBody(JSON)).build()
+        executeForOk(req)
+    }
+
+    fun reorderPhotos(albumId: String, photoIds: List<String>) {
+        val arr = org.json.JSONArray(photoIds)
+        val json = JSONObject().put("photo_ids", arr).toString()
+        val req = okhttp3.Request.Builder().url("$base/api/vault/albums/$albumId/photos/reorder")
             .put(json.toRequestBody(JSON)).build()
         executeForOk(req)
     }
