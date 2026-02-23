@@ -22,7 +22,7 @@ sealed class Screen {
     object Albums : Screen()
     data class AlbumPhotos(val album: Album) : Screen()
     data class PhotoFullscreen(val photo: Photo, val album: Album, val localImageFile: File? = null) : Screen()
-    data class PhotoEdit(val photo: Photo, val album: Album) : Screen()
+    data class PhotoEdit(val photo: Photo, val album: Album, val localImageFile: File? = null) : Screen()
 }
 
 class MainActivity : ComponentActivity() {
@@ -81,17 +81,22 @@ fun AppNavigation() {
             PhotoFullscreenScreen(
                 photo = s.photo,
                 localImageFile = s.localImageFile,
-                onBack = { screen = Screen.AlbumPhotos(s.album) },
-                onEdit = { screen = Screen.PhotoEdit(s.photo, s.album) },
+                onBack = {
+                    s.localImageFile?.delete()
+                    screen = Screen.AlbumPhotos(s.album)
+                },
+                onEdit = { screen = Screen.PhotoEdit(s.photo, s.album, s.localImageFile) },
             )
         }
         is Screen.PhotoEdit -> {
-            BackHandler { screen = Screen.PhotoFullscreen(s.photo, s.album) }
+            BackHandler { screen = Screen.PhotoFullscreen(s.photo, s.album, s.localImageFile) }
             PhotoEditScreen(
                 photo = s.photo,
+                localImageFile = s.localImageFile,
                 vm = vaultVm,
-                onBack = { screen = Screen.PhotoFullscreen(s.photo, s.album) },
+                onBack = { screen = Screen.PhotoFullscreen(s.photo, s.album, s.localImageFile) },
                 onCropSaved = { newPhoto, localFile, newFilename ->
+                    s.localImageFile?.delete()
                     val photoToShow = newPhoto ?: Photo(
                         id = newFilename,
                         filename = newFilename,
