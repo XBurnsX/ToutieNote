@@ -34,13 +34,6 @@ fun PhotoFullscreenScreen(
 ) {
     var showOverlay by remember { mutableStateOf(false) }
 
-    // Supprimer le fichier temporaire (crop) quand on quitte l’écran
-    DisposableEffect(localImageFile) {
-        onDispose {
-            if (localImageFile != null && localImageFile.exists()) localImageFile.delete()
-        }
-    }
-
     Box(
         modifier = Modifier
             .fillMaxSize()

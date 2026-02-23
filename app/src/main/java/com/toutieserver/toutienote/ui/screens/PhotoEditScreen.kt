@@ -52,6 +52,7 @@ import java.io.File
 @Composable
 fun PhotoEditScreen(
     photo: Photo,
+    localImageFile: File? = null,
     vm: VaultViewModel = viewModel(),
     onBack: () -> Unit,
     onCropSaved: (Photo?, java.io.File, String) -> Unit = { _, _, _ -> },
@@ -61,8 +62,11 @@ fun PhotoEditScreen(
     val error   by vm.error.collectAsState()
 
     var saving by remember { mutableStateOf(false) }
-    var imageUrl by remember(photo.id) {
-        mutableStateOf(ApiService.photoUrl(photo.url) + "?t=${System.currentTimeMillis()}")
+    var imageUrl by remember(photo.id, localImageFile) {
+        mutableStateOf(
+            if (localImageFile != null && localImageFile.exists()) localImageFile.absolutePath
+            else ApiService.photoUrl(photo.url) + "?t=${System.currentTimeMillis()}"
+        )
     }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showCropSheet by remember { mutableStateOf(false) }
@@ -81,7 +85,7 @@ fun PhotoEditScreen(
 
     LaunchedEffect(message) {
         message?.let {
-            imageUrl = ApiService.photoUrl(photo.url) + "?t=${System.currentTimeMillis()}"
+            if (localImageFile == null) imageUrl = ApiService.photoUrl(photo.url) + "?t=${System.currentTimeMillis()}"
             saving = false
             snackbarHostState.showSnackbar(it)
             vm.clearMessage()
@@ -95,13 +99,18 @@ fun PhotoEditScreen(
         saving = true
         Thread {
             try {
-                val client = OkHttpClient()
-                val req = Request.Builder().url(imageUrl).build()
-                val response = client.newCall(req).execute()
-                if (!response.isSuccessful) throw java.io.IOException("HTTP ${response.code}")
-                val bytes = response.body?.bytes() ?: throw java.io.IOException("Réponse vide")
-                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    ?: throw java.io.IOException("Image invalide")
+                val bitmap = if (localImageFile != null && localImageFile.exists()) {
+                    BitmapFactory.decodeFile(localImageFile.absolutePath)
+                        ?: throw java.io.IOException("Image invalide")
+                } else {
+                    val client = OkHttpClient()
+                    val req = Request.Builder().url(imageUrl).build()
+                    val response = client.newCall(req).execute()
+                    if (!response.isSuccessful) throw java.io.IOException("HTTP ${response.code}")
+                    val bytes = response.body?.bytes() ?: throw java.io.IOException("Réponse vide")
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        ?: throw java.io.IOException("Image invalide")
+                }
                 Handler(Looper.getMainLooper()).post {
                     cropBitmap = bitmap
                     cropRatioX = ratioX
