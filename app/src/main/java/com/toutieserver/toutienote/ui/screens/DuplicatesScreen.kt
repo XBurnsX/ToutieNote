@@ -46,12 +46,13 @@ fun DuplicatesScreen(
     // Did user trigger a scan at least once
     var hasScanned by remember { mutableStateOf(false) }
 
-    // Track which photo to KEEP per group (index in group)
-    val kept = remember(groups) {
-        mutableStateMapOf<Int, String>().apply {
-            groups.forEachIndexed { i, group ->
-                put(i, group.first().id)
-            }
+    // Photos cochées pour suppression — cocher/décocher n'importe quelle photo, aucune obligatoire par groupe
+    val toDeleteIds = remember { mutableStateSetOf<String>() }
+    LaunchedEffect(groups) {
+        toDeleteIds.clear()
+        // Suggestion par défaut: garder la 1re de chaque groupe, marquer le reste pour suppression
+        groups.forEach { group ->
+            group.drop(1).forEach { photo -> toDeleteIds.add(photo.id) }
         }
     }
 
@@ -59,9 +60,7 @@ fun DuplicatesScreen(
         message?.let { snackbarHostState.showSnackbar(it); vm.clearMessage() }
     }
 
-    val toDeleteCount = groups.flatMapIndexed { i, group ->
-        group.filter { it.id != kept[i] }
-    }.size
+    val toDeleteCount = toDeleteIds.size
 
     Scaffold(
         containerColor = BgColor,
@@ -99,11 +98,11 @@ fun DuplicatesScreen(
                     if (groups.isNotEmpty() && !scanning) {
                         Button(
                             onClick = {
-                                val photosToDelete = groups.flatMapIndexed { i, group ->
-                                    group.filter { it.id != kept[i] }
-                                }
+                                val allPhotos = groups.flatten()
+                                val photosToDelete = allPhotos.filter { it.id in toDeleteIds }
                                 if (photosToDelete.isNotEmpty()) {
                                     vm.cleanDuplicates(photosToDelete, albumId)
+                                    toDeleteIds.clear()
                                     hasScanned = false
                                 }
                             },
@@ -229,14 +228,17 @@ fun DuplicatesScreen(
                         }
 
                         itemsIndexed(group, key = { _, photo -> photo.id }) { _, photo ->
-                            val isKept = kept[groupIndex] == photo.id
+                            val markedForDelete = photo.id in toDeleteIds
 
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(12.dp))
-                                    .background(if (isKept) AccentColor.copy(alpha = 0.12f) else Surface2Color)
-                                    .clickable { kept[groupIndex] = photo.id }
+                                    .background(if (markedForDelete) DangerColor.copy(alpha = 0.12f) else AccentColor.copy(alpha = 0.12f))
+                                    .clickable {
+                                        if (photo.id in toDeleteIds) toDeleteIds.remove(photo.id)
+                                        else toDeleteIds.add(photo.id)
+                                    }
                                     .padding(10.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -267,7 +269,7 @@ fun DuplicatesScreen(
                                         color = MutedColor,
                                         fontFamily = FontFamily.Monospace
                                     )
-                                    AnimatedVisibility(visible = isKept, enter = fadeIn(), exit = fadeOut()) {
+                                    AnimatedVisibility(visible = !markedForDelete, enter = fadeIn(), exit = fadeOut()) {
                                         Text(
                                             "GARDER",
                                             fontSize = 10.sp,
@@ -278,17 +280,28 @@ fun DuplicatesScreen(
                                             modifier = Modifier.padding(top = 4.dp)
                                         )
                                     }
+                                    AnimatedVisibility(visible = markedForDelete, enter = fadeIn(), exit = fadeOut()) {
+                                        Text(
+                                            "SUPPRIMER",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = DangerColor,
+                                            fontFamily = FontFamily.Monospace,
+                                            letterSpacing = 2.sp,
+                                            modifier = Modifier.padding(top = 4.dp)
+                                        )
+                                    }
                                 }
 
-                                if (isKept) {
+                                if (markedForDelete) {
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
-                                        color = AccentColor,
+                                        color = DangerColor,
                                         modifier = Modifier.size(36.dp)
                                     ) {
                                         Icon(
-                                            Icons.Default.Check,
-                                            "Garder",
+                                            Icons.Default.DeleteOutline,
+                                            "Supprimer",
                                             tint = BgColor,
                                             modifier = Modifier.padding(8.dp)
                                         )
@@ -296,13 +309,13 @@ fun DuplicatesScreen(
                                 } else {
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
-                                        color = DangerColor.copy(alpha = 0.15f),
+                                        color = AccentColor.copy(alpha = 0.4f),
                                         modifier = Modifier.size(36.dp)
                                     ) {
                                         Icon(
-                                            Icons.Default.DeleteOutline,
-                                            "Supprimer",
-                                            tint = DangerColor,
+                                            Icons.Default.Check,
+                                            "Garder",
+                                            tint = BgColor,
                                             modifier = Modifier.padding(8.dp)
                                         )
                                     }

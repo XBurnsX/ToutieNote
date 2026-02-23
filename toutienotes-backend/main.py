@@ -157,7 +157,7 @@ def compute_crop_hash(image_path: Path):
         return None
 
 def are_crop_similar(ch1, ch2) -> bool:
-    """Check if two images are crops of each other. FIXED: 25% threshold."""
+    """Check if two images are crops of each other. 30% segments, diff≤10 — détecte les vrais crops (ex. 40%)."""
     try:
         segs1 = ch1.segment_hashes
         segs2 = ch2.segment_hashes
@@ -183,11 +183,11 @@ def are_crop_similar(ch1, ch2) -> bool:
                     best_j = j
             except Exception:
                 pass
-        if best_diff <= 12 and best_j >= 0:
+        if best_diff <= 10 and best_j >= 0:
             matched += 1
             used.add(best_j)
 
-    needed = max(1, int(len(small) * 0.25))
+    needed = max(1, int(len(small) * 0.50))
     return matched >= needed
 
 def compute_resize_hash(image_path: Path):
@@ -667,11 +667,11 @@ def _log(msg):
 
 def _run_scan(job_id: str, album_id):
     """
-    4-tier duplicate scan:
-      1. pHash exact     (threshold ≤ 6)   → identical/near-identical
-      2. crop_resistant   (segment match)   → light crops
-      3. resize pHash     (threshold ≤ 18)  → resizes
-      4. CLIP embeddings  (cosine ≥ 0.85)   → heavy crops, rotations, edits
+    3-tier duplicate scan (CLIP désactivé — regroupait des photos sémantiquement
+    similaires, pas des vrais doublons, ex. 68 photos du même événement):
+      1. pHash exact     (threshold ≤ 5)   → identical/near-identical
+      2. crop_resistant  (30% segments, diff≤10) → crops légers à moyens (ex. 40%)
+      3. resize pHash    (threshold ≤ 10) → resizes (était 18, trop permissif)
     """
     try:
         _log("A: _run_scan démarré")
@@ -691,10 +691,9 @@ def _run_scan(job_id: str, album_id):
             return
 
         # ── Phase 1: Compute all hashes (0-30%) ─────────────────────────────
-        _log("C: calcul des hash (phash + crop + resize + CLIP)...")
+        _log("C: calcul des hash (phash + crop + resize)...")
         crop_cache = {}
         resize_cache = {}
-        clip_cache = {}
 
         for i, p in enumerate(photos):
             path = VAULT_DIR / p["filename"]
@@ -706,15 +705,12 @@ def _run_scan(job_id: str, album_id):
                     rh = compute_resize_hash(path)
                     if rh is not None:
                         resize_cache[p["id"]] = rh
-                # CLIP embedding (the magic for heavy crops)
-                emb = compute_clip_embedding(path)
-                if emb is not None:
-                    clip_cache[p["id"]] = emb
+                # CLIP désactivé: regroupait des photos sémantiquement similaires (ex. 68 photos du même événement)
 
             scan_progress[job_id]["scanned"] = i + 1
             scan_progress[job_id]["percent"] = min(30, int((i + 1) / total * 30))
 
-        _log(f"D: crop_cache={len(crop_cache)} resize_cache={len(resize_cache)} clip_cache={len(clip_cache)}")
+        _log(f"D: crop_cache={len(crop_cache)} resize_cache={len(resize_cache)}")
 
         # ── Phase 2: Compare all pairs (30-100%) ────────────────────────────
         total_pairs = total * (total - 1) // 2 if total > 1 else 0
@@ -722,8 +718,7 @@ def _run_scan(job_id: str, album_id):
         pairs_done = 0
         used = set()
         groups = []
-
-        CLIP_THRESHOLD = 0.85
+        MAX_GROUP_SIZE = 12  # sécurité: évite les méga-groupes (ex. 68 photos) en cas de seuil trop permissif
 
         for i, p1 in enumerate(photos):
             if p1["id"] in used:
@@ -732,6 +727,8 @@ def _run_scan(job_id: str, album_id):
             used.add(p1["id"])
 
             for j in range(i + 1, len(photos)):
+                if len(group) >= MAX_GROUP_SIZE:
+                    break
                 p2 = photos[j]
                 if p2["id"] in used:
                     continue
@@ -743,7 +740,7 @@ def _run_scan(job_id: str, album_id):
                 if not similar and p1.get("phash") and p2.get("phash"):
                     try:
                         diff = imagehash.hex_to_hash(p1["phash"]) - imagehash.hex_to_hash(p2["phash"])
-                        if diff <= 6:
+                        if diff <= 5:
                             similar = True
                             match_reason = f"phash(diff={diff})"
                     except Exception:
@@ -759,18 +756,11 @@ def _run_scan(job_id: str, album_id):
                 if not similar and p1["id"] in resize_cache and p2["id"] in resize_cache:
                     try:
                         diff = resize_cache[p1["id"]] - resize_cache[p2["id"]]
-                        if diff <= 18:
+                        if diff <= 10:
                             similar = True
                             match_reason = f"resize(diff={diff})"
                     except Exception:
                         pass
-
-                # Tier 4: CLIP embeddings (catches heavy crops, rotations, edits)
-                if not similar and p1["id"] in clip_cache and p2["id"] in clip_cache:
-                    cos_sim = clip_cosine_sim(clip_cache[p1["id"]], clip_cache[p2["id"]])
-                    if cos_sim >= CLIP_THRESHOLD:
-                        similar = True
-                        match_reason = f"CLIP(sim={cos_sim:.3f})"
 
                 if similar:
                     group.append(p2)
