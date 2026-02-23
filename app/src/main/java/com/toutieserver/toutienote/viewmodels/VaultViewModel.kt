@@ -15,6 +15,7 @@ import com.toutieserver.toutienote.data.api.ApiService
 import com.toutieserver.toutienote.data.models.Album
 import com.toutieserver.toutienote.data.models.Photo
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -50,8 +51,25 @@ class VaultViewModel : ViewModel() {
     private val _duplicateCount = MutableStateFlow(0)
     val duplicateCount: StateFlow<Int> = _duplicateCount
 
+    private val _duplicateGroups = MutableStateFlow<List<List<Photo>>>(emptyList())
+    val duplicateGroups: StateFlow<List<List<Photo>>> = _duplicateGroups
+
+    private val _scanning = MutableStateFlow(false)
+    val scanning: StateFlow<Boolean> = _scanning
+
+    private val _scannedCount = MutableStateFlow(0)
+    val scannedCount: StateFlow<Int> = _scannedCount
+
+    private val _scanTotal = MutableStateFlow(0)
+    val scanTotal: StateFlow<Int> = _scanTotal
+
+    private val _scanPercent = MutableStateFlow(0)
+    val scanPercent: StateFlow<Int> = _scanPercent
+
     fun clearPendingDeletions() { _pendingGalleryDeletions.value = emptyList() }
     fun clearDuplicateCount() { _duplicateCount.value = 0 }
+    fun clearMessage() { _message.value = null }
+    fun clearError() { _error.value = null }
 
     // ── PIN ────────────────────────────────────────────────────
     fun checkPin() {
@@ -65,9 +83,8 @@ class VaultViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 ApiService.setupPin(pin)
-                _pinExists.value = true
                 kotlinx.coroutines.withContext(Dispatchers.Main) { onSuccess() }
-            } catch (e: Exception) { _error.value = "Erreur setup PIN: ${e.message}" }
+            } catch (e: Exception) { _error.value = "Erreur: ${e.message}" }
         }
     }
 
@@ -93,10 +110,10 @@ class VaultViewModel : ViewModel() {
     fun createAlbum(name: String) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val album = ApiService.createAlbum(name)
-                _albums.value = listOf(album) + _albums.value
+                ApiService.createAlbum(name)
                 _message.value = "Album créé ✓"
-            } catch (e: Exception) { _error.value = "Erreur création: ${e.message}" }
+                loadAlbums()
+            } catch (e: Exception) { _error.value = "Erreur: ${e.message}" }
         }
     }
 
@@ -104,9 +121,9 @@ class VaultViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 ApiService.deleteAlbum(albumId)
-                _albums.value = _albums.value.filter { it.id != albumId }
-                _message.value = "Album supprimé ✓"
-            } catch (e: Exception) { _error.value = "Erreur suppression: ${e.message}" }
+                _message.value = "Album supprimé"
+                loadAlbums()
+            } catch (e: Exception) { _error.value = "Erreur: ${e.message}" }
         }
     }
 
@@ -114,11 +131,9 @@ class VaultViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 ApiService.renameAlbum(albumId, name)
-                _albums.value = _albums.value.map {
-                    if (it.id == albumId) it.copy(name = name) else it
-                }
                 _message.value = "Album renommé ✓"
-            } catch (e: Exception) { _error.value = "Erreur renommage: ${e.message}" }
+                loadAlbums()
+            } catch (e: Exception) { _error.value = "Erreur: ${e.message}" }
         }
     }
 
@@ -388,7 +403,7 @@ class VaultViewModel : ViewModel() {
                 }
             }
 
-            // Method 1b: Find by file size only (Google Photos cloud picker uses internal names)
+            // Method 1b: Find by file size only
             if (found == null && fileSize > 0) {
                 Log.d(TAG, "    M1b: trying size-only match ($fileSize bytes)")
                 for ((label, col) in collections) {
@@ -415,7 +430,7 @@ class VaultViewModel : ViewModel() {
                 }
             }
 
-            // Method 1c: If size matched multiple, verify by reading first bytes
+            // Method 1c: Size match + content verification
             if (found == null && fileSize > 0) {
                 Log.d(TAG, "    M1c: trying size match + content verification")
                 val srcHeader = try {
@@ -502,10 +517,6 @@ class VaultViewModel : ViewModel() {
         }
     }
 
-    companion object {
-        private const val TAG = "VaultVM"
-    }
-
     // ── Export vers la galerie ──────────────────────────────────
     fun exportToGallery(photo: Photo, contentResolver: ContentResolver) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -565,16 +576,13 @@ class VaultViewModel : ViewModel() {
     fun uploadCroppedPhoto(file: File, originalFilename: String, albumId: String? = null, onSuccess: ((Photo?, File, String) -> Unit)? = null) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                // Trouver le photo_id de l'original
                 val originalPhoto = _photos.value.find { it.filename == originalFilename }
 
                 if (originalPhoto != null) {
-                    // REPLACE: même id, même created_at → même position dans la liste
                     val newFilename = "cropped_${System.currentTimeMillis()}.jpg"
                     val replacedPhoto = ApiService.replacePhoto(originalPhoto.id, file, newFilename)
                     _message.value = "Photo rognée ✓"
 
-                    // Mettre à jour la liste locale en remplaçant l'ancienne par la nouvelle
                     _photos.value = _photos.value.map { p ->
                         if (p.id == originalPhoto.id) replacedPhoto else p
                     }
@@ -584,7 +592,6 @@ class VaultViewModel : ViewModel() {
                         onSuccess?.invoke(replacedPhoto, file, replacedPhoto.filename)
                     }
                 } else {
-                    // Fallback: photo pas trouvée localement, upload classique
                     val newFilename = "cropped_${System.currentTimeMillis()}_$originalFilename"
                     ApiService.uploadPhoto(file, newFilename, albumId)
                     ApiService.deletePhoto(originalFilename)
@@ -603,21 +610,7 @@ class VaultViewModel : ViewModel() {
         }
     }
 
-    private val _duplicateGroups = MutableStateFlow<List<List<Photo>>>(emptyList())
-    val duplicateGroups: StateFlow<List<List<Photo>>> = _duplicateGroups
-
-    private val _scanning = MutableStateFlow(false)
-    val scanning: StateFlow<Boolean> = _scanning
-
-    private val _scannedCount = MutableStateFlow(0)
-    val scannedCount: StateFlow<Int> = _scannedCount
-
-    private val _scanTotal = MutableStateFlow(0)
-    val scanTotal: StateFlow<Int> = _scanTotal
-
-    private val _scanPercent = MutableStateFlow(0)
-    val scanPercent: StateFlow<Int> = _scanPercent
-
+    // ── Duplicate Scan (ASYNC + POLLING) ───────────────────────
     fun scanDuplicates(albumId: String? = null) {
         viewModelScope.launch(Dispatchers.IO) {
             Log.d("Doublon", "A: scanDuplicates appelé albumId=$albumId")
@@ -627,23 +620,41 @@ class VaultViewModel : ViewModel() {
             _scanTotal.value = 0
             _scanPercent.value = 0
             try {
-                Log.d("Doublon", "B: getPhotoCount demande...")
-                try {
-                    val total = ApiService.getPhotoCount(albumId)
-                    Log.d("Doublon", "C: getPhotoCount retourne total=$total")
-                    _scanTotal.value = total
-                } catch (e: Exception) {
-                    Log.w("Doublon", "C: getPhotoCount échoué (404?), on continue: ${e.message}")
-                    _scanTotal.value = 0
+                // ── Lancer le scan async ────────────────────────────
+                Log.d("Doublon", "B: startScanAsync...")
+                val (jobId, total) = ApiService.startScanAsync(albumId)
+                Log.d("Doublon", "C: job=$jobId total=$total")
+                _scanTotal.value = total
+
+                // ── Poll status toutes les secondes ─────────────────
+                while (true) {
+                    delay(1000L)
+                    try {
+                        val status = ApiService.getScanStatus(jobId)
+                        Log.d("Doublon", "D: poll → scanned=${status.scanned} percent=${status.percent} done=${status.done}")
+
+                        _scannedCount.value = status.scanned
+                        if (status.total > 0) _scanTotal.value = status.total
+                        _scanPercent.value = status.percent
+
+                        if (status.done) {
+                            if (status.error != null) {
+                                Log.e("Doublon", "E: scan error: ${status.error}")
+                                _error.value = "Erreur scan: ${status.error}"
+                            } else {
+                                Log.d("Doublon", "E: scan OK groups=${status.groups.size}")
+                                _duplicateGroups.value = status.groups
+                                _scannedCount.value = status.scanned
+                                _scanPercent.value = 100
+                            }
+                            break
+                        }
+                    } catch (e: Exception) {
+                        Log.w("Doublon", "D: poll failed (retry): ${e.message}")
+                    }
                 }
-                Log.d("Doublon", "D: scanDuplicatesSync démarre (peut prendre plusieurs min)...")
-                val result = ApiService.scanDuplicatesSync(albumId)
-                Log.d("Doublon", "E: scanDuplicatesSync terminé scanned=${result.scanned} groups=${result.groups.size}")
-                _scannedCount.value = result.scanned
-                if (_scanTotal.value == 0) _scanTotal.value = result.scanned
-                _scanPercent.value = 100
-                _duplicateGroups.value = result.groups
-                result.groups.forEachIndexed { i, g ->
+
+                _duplicateGroups.value.forEachIndexed { i, g ->
                     Log.d("Doublon", "F: groupe $i = ${g.size} photos: ${g.map { it.filename }.take(3)}")
                 }
                 Log.d("Doublon", "Z: scan terminé OK")
@@ -675,6 +686,7 @@ class VaultViewModel : ViewModel() {
         }
     }
 
+    // ── Resize ─────────────────────────────────────────────────
     fun resizePhoto(filename: String, width: Int, height: Int) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -685,6 +697,7 @@ class VaultViewModel : ViewModel() {
         }
     }
 
+    // ── Favorite ───────────────────────────────────────────────
     fun toggleFavorite(photo: Photo, albumId: String? = null) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -692,24 +705,22 @@ class VaultViewModel : ViewModel() {
                 _photos.value = _photos.value.map {
                     if (it.id == photo.id) it.copy(favorite = newFav) else it
                 }
-                val aid = albumId ?: photo.albumId
-                if (aid != null) {
-                    val fresh = ApiService.getPhotos(aid)
-                    _photos.value = fresh
-                }
             } catch (e: Exception) { _error.value = "Erreur favori: ${e.message}" }
         }
     }
 
+    // ── Delete photo ───────────────────────────────────────────
     fun deletePhoto(filename: String) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 ApiService.deletePhoto(filename)
                 _photos.value = _photos.value.filter { it.filename != filename }
-            } catch (e: Exception) { _error.value = "Erreur suppression: ${e.message}" }
+                _message.value = "Photo supprimée"
+            } catch (e: Exception) { _error.value = "Erreur: ${e.message}" }
         }
     }
 
-    fun clearMessage() { _message.value = null }
-    fun clearError() { _error.value = null }
+    companion object {
+        private const val TAG = "VaultVM"
+    }
 }

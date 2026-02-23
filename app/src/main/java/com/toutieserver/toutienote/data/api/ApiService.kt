@@ -42,6 +42,10 @@ object ApiService {
         }
     }
 
+    private fun optNullableString(obj: JSONObject, key: String): String? {
+        return if (obj.isNull(key)) null else obj.optString(key)
+    }
+
     // ── Notes ──────────────────────────────────────────────────
     fun getNotes(): List<Note> {
         val req = okhttp3.Request.Builder().url("$base/api/notes").get().build()
@@ -99,10 +103,6 @@ object ApiService {
     }
 
     // ── Vault Albums ───────────────────────────────────────────
-    private fun optNullableString(obj: JSONObject, key: String): String? {
-        return if (obj.isNull(key)) null else obj.optString(key)
-    }
-
     fun getAlbums(): List<Album> {
         val req = okhttp3.Request.Builder().url("$base/api/vault/albums").get().build()
         val body = executeForBody(req)
@@ -156,8 +156,7 @@ object ApiService {
             .put(json.toRequestBody(JSON)).build()
         executeForOk(req)
     }
-    
-    // NOUVEAU: Fonctions pour verrouiller un album individuel
+
     fun lockAlbum(albumId: String, pin: String) {
         val json = JSONObject().put("pin", pin).toString()
         val req = okhttp3.Request.Builder().url("$base/api/vault/albums/$albumId/lock")
@@ -230,7 +229,7 @@ object ApiService {
             filename.endsWith(".png", ignoreCase = true) -> "image/png"
             else -> "image/jpeg"
         }
-        
+
         val bodyBuilder = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("file", filename, file.asRequestBody(mimeType.toMediaType()))
 
@@ -249,10 +248,6 @@ object ApiService {
         )
     }
 
-    /**
-     * Remplace le fichier d'une photo existante.
-     * Le backend garde le même id, album_id et created_at → la photo ne bouge pas de position.
-     */
     fun replacePhoto(photoId: String, file: File, filename: String): Photo {
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("file", filename, file.asRequestBody("image/*".toMediaType()))
@@ -284,95 +279,6 @@ object ApiService {
         executeForOk(req)
     }
 
-    data class ScanResult(val groups: List<List<Photo>>, val scanned: Int)
-    data class ScanStatus(val scanned: Int, val total: Int, val percent: Int, val done: Boolean, val groups: List<List<Photo>>, val error: String?)
-
-    fun getPhotoCount(albumId: String? = null): Int {
-        val url = if (albumId != null) "$base/api/vault/photo-count?album_id=$albumId"
-                  else "$base/api/vault/photo-count"
-        Log.d("Doublon", "B1: GET $url")
-        val req = okhttp3.Request.Builder().url(url).get().build()
-        val body = executeForBody(req)
-        val count = JSONObject(body).optInt("count", 0)
-        Log.d("Doublon", "B2: photo-count response count=$count")
-        return count
-    }
-
-    fun scanDuplicatesSync(albumId: String? = null): ScanResult {
-        val url = if (albumId != null) "$base/api/vault/scan-duplicates-sync?album_id=$albumId"
-                  else "$base/api/vault/scan-duplicates-sync"
-        Log.d("Doublon", "D1: POST $url")
-        val req = okhttp3.Request.Builder().url(url)
-            .post(okhttp3.RequestBody.create(null, ByteArray(0)))
-            .build()
-        val body = executeForBody(req)
-        Log.d("Doublon", "D2: sync response length=${body.length}")
-        val root = JSONObject(body)
-        val groups = mutableListOf<List<Photo>>()
-        if (root.has("groups")) {
-            val arr = root.getJSONArray("groups")
-            for (i in 0 until arr.length()) {
-                val groupArr = arr.getJSONArray(i)
-                groups.add((0 until groupArr.length()).map { j ->
-                    parsePhotoFromJson(groupArr.getJSONObject(j))
-                })
-            }
-        }
-        return ScanResult(groups, root.optInt("scanned", 0))
-    }
-
-    private fun parsePhotoFromJson(obj: JSONObject): Photo {
-        val basePhotoUrl = obj.getString("url")
-        return Photo(
-            id = obj.getString("id"),
-            filename = obj.getString("filename"),
-            url = basePhotoUrl,
-            size = obj.optLong("size"),
-            createdAt = obj.optString("created_at"),
-            albumId = optNullableString(obj, "album_id"),
-            thumbnailUrl = obj.optString("thumbnail_url", basePhotoUrl),
-            mediaType = obj.optString("media_type", "image"),
-            favorite = obj.optInt("favorite", 0) == 1
-        )
-    }
-
-    fun getScanStatus(jobId: String): ScanStatus {
-        val req = okhttp3.Request.Builder().url("$base/api/vault/scan-duplicates/status?job_id=$jobId").get().build()
-        val body = executeForBody(req)
-        val root = JSONObject(body)
-        val groups = mutableListOf<List<Photo>>()
-        if (root.has("groups")) {
-            val arr = root.getJSONArray("groups")
-            for (i in 0 until arr.length()) {
-                val groupArr = arr.getJSONArray(i)
-                val group = (0 until groupArr.length()).map { j ->
-                    val obj = groupArr.getJSONObject(j)
-                    val basePhotoUrl = obj.getString("url")
-                    Photo(
-                        id = obj.getString("id"),
-                        filename = obj.getString("filename"),
-                        url = basePhotoUrl,
-                        size = obj.optLong("size"),
-                        createdAt = obj.optString("created_at"),
-                        albumId = optNullableString(obj, "album_id"),
-                        thumbnailUrl = obj.optString("thumbnail_url", basePhotoUrl),
-                        mediaType = obj.optString("media_type", "image"),
-                        favorite = obj.optInt("favorite", 0) == 1
-                    )
-                }
-                groups.add(group)
-            }
-        }
-        return ScanStatus(
-            scanned = root.optInt("scanned", 0),
-            total = root.optInt("total", 0),
-            percent = root.optInt("percent", 0),
-            done = root.optBoolean("done", false),
-            groups = groups,
-            error = if (root.isNull("error")) null else root.getString("error")
-        )
-    }
-
     fun toggleFavorite(photoId: String): Boolean {
         val req = okhttp3.Request.Builder().url("$base/api/vault/photo/$photoId/favorite")
             .put("{}".toRequestBody(JSON)).build()
@@ -400,6 +306,99 @@ object ApiService {
         return response.body?.bytes() ?: throw java.io.IOException("Body vide")
     }
 
+    // ── Duplicate Scan ─────────────────────────────────────────
+
+    data class ScanResult(val groups: List<List<Photo>>, val scanned: Int)
+    data class ScanStatus(val scanned: Int, val total: Int, val percent: Int, val done: Boolean, val groups: List<List<Photo>>, val error: String?)
+
+    private fun parsePhotoFromJson(obj: JSONObject): Photo {
+        val basePhotoUrl = obj.getString("url")
+        return Photo(
+            id = obj.getString("id"),
+            filename = obj.getString("filename"),
+            url = basePhotoUrl,
+            size = obj.optLong("size"),
+            createdAt = obj.optString("created_at"),
+            albumId = optNullableString(obj, "album_id"),
+            thumbnailUrl = obj.optString("thumbnail_url", basePhotoUrl),
+            mediaType = obj.optString("media_type", "image"),
+            favorite = obj.optInt("favorite", 0) == 1
+        )
+    }
+
+    fun getPhotoCount(albumId: String? = null): Int {
+        val url = if (albumId != null) "$base/api/vault/photo-count?album_id=$albumId"
+                  else "$base/api/vault/photo-count"
+        Log.d("Doublon", "B1: GET $url")
+        val req = okhttp3.Request.Builder().url(url).get().build()
+        val body = executeForBody(req)
+        val count = JSONObject(body).optInt("count", 0)
+        Log.d("Doublon", "B2: photo-count response count=$count")
+        return count
+    }
+
+    /** Lance un scan async, retourne (jobId, total) */
+    fun startScanAsync(albumId: String? = null): Pair<String, Int> {
+        val url = if (albumId != null) "$base/api/vault/scan-duplicates?album_id=$albumId"
+                  else "$base/api/vault/scan-duplicates"
+        Log.d("Doublon", "ASYNC: POST $url")
+        val req = okhttp3.Request.Builder().url(url)
+            .post(okhttp3.RequestBody.create(null, ByteArray(0)))
+            .build()
+        val body = executeForBody(req)
+        val root = JSONObject(body)
+        return Pair(root.getString("job_id"), root.optInt("total", 0))
+    }
+
+    fun scanDuplicatesSync(albumId: String? = null): ScanResult {
+        val url = if (albumId != null) "$base/api/vault/scan-duplicates-sync?album_id=$albumId"
+                  else "$base/api/vault/scan-duplicates-sync"
+        Log.d("Doublon", "D1: POST $url")
+        val req = okhttp3.Request.Builder().url(url)
+            .post(okhttp3.RequestBody.create(null, ByteArray(0)))
+            .build()
+        val body = executeForBody(req)
+        Log.d("Doublon", "D2: sync response length=${body.length}")
+        val root = JSONObject(body)
+        val groups = mutableListOf<List<Photo>>()
+        if (root.has("groups")) {
+            val arr = root.getJSONArray("groups")
+            for (i in 0 until arr.length()) {
+                val groupArr = arr.getJSONArray(i)
+                groups.add((0 until groupArr.length()).map { j ->
+                    parsePhotoFromJson(groupArr.getJSONObject(j))
+                })
+            }
+        }
+        return ScanResult(groups, root.optInt("scanned", 0))
+    }
+
+    fun getScanStatus(jobId: String): ScanStatus {
+        val req = okhttp3.Request.Builder().url("$base/api/vault/scan-duplicates/status?job_id=$jobId").get().build()
+        val body = executeForBody(req)
+        val root = JSONObject(body)
+        val groups = mutableListOf<List<Photo>>()
+        if (root.has("groups")) {
+            val arr = root.getJSONArray("groups")
+            for (i in 0 until arr.length()) {
+                val groupArr = arr.getJSONArray(i)
+                val group = (0 until groupArr.length()).map { j ->
+                    parsePhotoFromJson(groupArr.getJSONObject(j))
+                }
+                groups.add(group)
+            }
+        }
+        return ScanStatus(
+            scanned = root.optInt("scanned", 0),
+            total = root.optInt("total", 0),
+            percent = root.optInt("percent", 0),
+            done = root.optBoolean("done", false),
+            groups = groups,
+            error = if (root.isNull("error")) null else root.getString("error")
+        )
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────
     fun photoUrl(url: String): String {
         val path = url.trimStart('/')
         val baseNoSlash = base.trimEnd('/')
