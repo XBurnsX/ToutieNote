@@ -656,6 +656,22 @@ class VaultViewModel : ViewModel() {
         }
     }
 
+    fun toggleFavorite(photo: Photo, albumId: String? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val newFav = ApiService.toggleFavorite(photo.id)
+                _photos.value = _photos.value.map {
+                    if (it.id == photo.id) it.copy(favorite = newFav) else it
+                }
+                val aid = albumId ?: photo.albumId
+                if (aid != null) {
+                    val fresh = ApiService.getPhotos(aid)
+                    _photos.value = fresh
+                }
+            } catch (e: Exception) { _error.value = "Erreur favori: ${e.message}" }
+        }
+    }
+
     fun deletePhoto(filename: String) {
         viewModelScope.launch(Dispatchers.IO) {
             try {

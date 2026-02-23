@@ -15,6 +15,8 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBackIosNew
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -40,6 +42,7 @@ import com.toutieserver.toutienote.viewmodels.VaultViewModel
 fun PhotoFullscreenScreen(
     initialIndex: Int,
     vm: VaultViewModel,
+    albumId: String? = null,
     onBack: () -> Unit,
     onEdit: (Photo) -> Unit,
 ) {
@@ -183,6 +186,24 @@ fun PhotoFullscreenScreen(
                     ) {
                         Icon(Icons.Default.SaveAlt, "Exporter", tint = Color.White, modifier = Modifier.size(24.dp))
                         Text("Exporter", color = Color.White, fontSize = 10.sp)
+                    }
+
+                    // Favorite
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { currentPhoto?.let { vm.toggleFavorite(it, albumId) } }
+                    ) {
+                        val isFav = currentPhoto?.favorite == true
+                        Icon(
+                            if (isFav) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            "Favori",
+                            tint = if (isFav) Color(0xFFFF4D6A) else Color.White,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Text("Favori", color = Color.White, fontSize = 10.sp)
                     }
 
                     // Edit

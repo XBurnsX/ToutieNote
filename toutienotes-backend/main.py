@@ -85,6 +85,7 @@ def init_db():
         ("photos", "media_type", "TEXT DEFAULT 'image'"),
         ("photos", "phash", "TEXT"),
         ("photos", "sort_order", "INTEGER DEFAULT 0"),
+        ("photos", "favorite", "INTEGER DEFAULT 0"),
     ]
     for table, col, col_type in migrations:
         try:
@@ -92,6 +93,7 @@ def init_db():
         except Exception:
             pass
 
+    db.execute("UPDATE photos SET favorite=0 WHERE favorite IS NULL")
     db.commit()
     db.close()
 
@@ -420,9 +422,9 @@ def list_photos(album_id: str = None):
     """List all photos, optionally filtered by album_id"""
     db = get_db()
     if album_id:
-        rows = db.execute("SELECT * FROM photos WHERE album_id=? ORDER BY sort_order ASC, created_at DESC", (album_id,)).fetchall()
+        rows = db.execute("SELECT * FROM photos WHERE album_id=? ORDER BY COALESCE(favorite,0) DESC, sort_order ASC, created_at DESC", (album_id,)).fetchall()
     else:
-        rows = db.execute("SELECT * FROM photos ORDER BY sort_order ASC, created_at DESC").fetchall()
+        rows = db.execute("SELECT * FROM photos ORDER BY COALESCE(favorite,0) DESC, sort_order ASC, created_at DESC").fetchall()
     db.close()
 
     photos = []
@@ -679,6 +681,19 @@ def move_photo_to_album(photo_id: str, data: PhotoMoveToAlbum):
     db.commit()
     db.close()
     return {"ok": True}
+
+@app.put("/api/vault/photo/{photo_id}/favorite")
+def toggle_favorite(photo_id: str):
+    db = get_db()
+    row = db.execute("SELECT favorite FROM photos WHERE id=?", (photo_id,)).fetchone()
+    if not row:
+        db.close()
+        raise HTTPException(404, "Photo not found")
+    new_val = 0 if (dict(row).get("favorite") or 0) else 1
+    db.execute("UPDATE photos SET favorite=? WHERE id=?", (new_val, photo_id))
+    db.commit()
+    db.close()
+    return {"ok": True, "favorite": new_val == 1}
 
 @app.delete("/api/vault/photo/{filename}")
 def delete_photo(filename: str):

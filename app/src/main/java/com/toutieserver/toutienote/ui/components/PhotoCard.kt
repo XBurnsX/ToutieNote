@@ -6,6 +6,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.PlayCircleFilled
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -91,6 +92,18 @@ fun PhotoCard(
                     fontFamily = FontFamily.Monospace
                 )
             }
+        }
+
+        if (photo.favorite) {
+            Icon(
+                Icons.Default.Favorite,
+                contentDescription = "Favori",
+                tint = Color(0xFFFF4D6A),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(5.dp)
+                    .size(18.dp)
+            )
         }
     }
 }

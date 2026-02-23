@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -49,7 +50,7 @@ private fun groupPhotosByMonth(photos: List<Photo>): List<Pair<String, List<Phot
     val monthFormat = SimpleDateFormat("MMMM yyyy", Locale.FRENCH)
 
     return photos
-        .sortedByDescending { it.createdAt }
+        .sortedWith(compareByDescending<Photo> { it.favorite }.thenByDescending { it.createdAt })
         .groupBy { photo ->
             try {
                 val date = isoParser.parse(photo.createdAt.take(19))
@@ -192,6 +193,13 @@ fun AlbumPhotosScreen(
                     color = TextColor
                 )
                 HorizontalDivider(color = BorderColor)
+                OptionItem(
+                    if (photo.favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                    if (photo.favorite) "Retirer des favoris" else "Ajouter aux favoris",
+                    iconTint = if (photo.favorite) Color(0xFFFF4D6A) else MutedColor,
+                ) {
+                    vm.toggleFavorite(photo, album.id); showOptionsSheet = null
+                }
                 OptionItem(Icons.Default.Visibility, "Voir en plein écran") {
                     onPhotoClick(photo); showOptionsSheet = null
                 }
@@ -298,7 +306,7 @@ fun AlbumPhotosScreen(
                     }
                 }
                 else -> {
-                    val groupedPhotos = remember(photos) { groupPhotosByMonth(photos) }
+                    val sortedPhotos = remember(photos) { photos }
 
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(3),
@@ -307,30 +315,12 @@ fun AlbumPhotosScreen(
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        groupedPhotos.forEach { (monthLabel, monthPhotos) ->
-                            item(
-                                key = "header_$monthLabel",
-                                span = { GridItemSpan(3) }
-                            ) {
-                                Text(
-                                    text = monthLabel,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(BgColor)
-                                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = TextColor
-                                )
-                            }
-
-                            items(monthPhotos, key = { it.id }) { photo ->
-                                PhotoCard(
-                                    photo = photo,
-                                    onClick = { onPhotoClick(photo) },
-                                    onLongClick = { showOptionsSheet = photo }
-                                )
-                            }
+                        items(sortedPhotos, key = { it.id }) { photo ->
+                            PhotoCard(
+                                photo = photo,
+                                onClick = { onPhotoClick(photo) },
+                                onLongClick = { showOptionsSheet = photo }
+                            )
                         }
                     }
                 }

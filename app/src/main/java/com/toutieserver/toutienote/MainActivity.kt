@@ -128,6 +128,7 @@ fun AppNavigation() {
             PhotoFullscreenScreen(
                 initialIndex = s.initialIndex,
                 vm = vaultVm,
+                albumId = s.album.id,
                 onBack = { screen = Screen.AlbumPhotos(s.album) },
                 onEdit = { photo ->
                     // Passer le pageIndex actuel pour revenir au même endroit après crop

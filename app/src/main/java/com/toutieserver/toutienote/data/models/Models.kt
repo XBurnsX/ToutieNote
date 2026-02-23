@@ -14,8 +14,9 @@ data class Photo(
     val size: Long,
     val createdAt: String,
     val albumId: String? = null,
-    val thumbnailUrl: String = url, // Ajouté pour le Space Saver
-    val mediaType: String = "image" // Ajouté pour les Vidéos
+    val thumbnailUrl: String = url,
+    val mediaType: String = "image",
+    val favorite: Boolean = false,
 )
 
 data class Album(

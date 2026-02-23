@@ -212,8 +212,9 @@ object ApiService {
                 size = obj.optLong("size"),
                 createdAt = obj.optString("created_at"),
                 albumId = optNullableString(obj, "album_id"),
-                thumbnailUrl = obj.optString("thumbnail_url", basePhotoUrl), // Gère le Space Saver
-                mediaType = obj.optString("media_type", "image")             // Gère les vidéos
+                thumbnailUrl = obj.optString("thumbnail_url", basePhotoUrl),
+                mediaType = obj.optString("media_type", "image"),
+                favorite = (obj.optInt("favorite", 0) == 1),
             )
         }
     }
@@ -313,6 +314,13 @@ object ApiService {
             groups.add(group)
         }
         return ScanResult(groups, root.optInt("scanned", 0))
+    }
+
+    fun toggleFavorite(photoId: String): Boolean {
+        val req = okhttp3.Request.Builder().url("$base/api/vault/photo/$photoId/favorite")
+            .put("{}".toRequestBody(JSON)).build()
+        val body = executeForBody(req)
+        return JSONObject(body).optBoolean("favorite", false)
     }
 
     fun deletePhoto(filename: String) {
