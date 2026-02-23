@@ -2,7 +2,9 @@ package com.toutieserver.toutienote.ui.screens
 
 import android.Manifest
 import android.os.Build
+import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -73,6 +75,22 @@ fun AlbumPhotosScreen(
     var showDeleteDialog by remember { mutableStateOf<Photo?>(null) }
     var showOptionsSheet by remember { mutableStateOf<Photo?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
+
+    val pendingDeletions by vm.pendingGalleryDeletions.collectAsState()
+    val deleteLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { vm.clearPendingDeletions() }
+
+    LaunchedEffect(pendingDeletions) {
+        if (pendingDeletions.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val intent = MediaStore.createDeleteRequest(context.contentResolver, pendingDeletions)
+                deleteLauncher.launch(IntentSenderRequest.Builder(intent.intentSender).build())
+            } catch (_: Exception) {
+                vm.clearPendingDeletions()
+            }
+        }
+    }
 
     // Recharger à chaque fois qu'on arrive sur cet écran
     var refreshKey by remember { mutableIntStateOf(0) }

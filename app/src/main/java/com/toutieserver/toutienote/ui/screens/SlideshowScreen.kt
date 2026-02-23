@@ -33,7 +33,10 @@ fun SlideshowScreen(
     photos: List<Photo>,
     onBack: () -> Unit,
 ) {
-    if (photos.isEmpty()) { onBack(); return }
+    if (photos.isEmpty()) {
+        LaunchedEffect(Unit) { onBack() }
+        return
+    }
 
     var currentIndex by remember { mutableIntStateOf(0) }
     var isPlaying by remember { mutableStateOf(true) }

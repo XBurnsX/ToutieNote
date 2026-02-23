@@ -83,7 +83,7 @@ fun PhotoFullscreenScreen(
                 contentAlignment = Alignment.Center
             ) {
                 AsyncImage(
-                    model = ApiService.photoUrl(photo.url),
+                    model = ApiService.photoUrl(photo.url) + "?t=${photo.url.hashCode()}",
                     contentDescription = photo.filename,
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize()

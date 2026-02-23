@@ -95,6 +95,9 @@ class AlbumCreate(BaseModel):
 class PhotoMoveToAlbum(BaseModel):
     album_id: str
 
+class AlbumCoverUpdate(BaseModel):
+    photo_url: str
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def hash_pin(pin: str) -> str:
     return hashlib.sha256(pin.encode()).hexdigest()
@@ -240,6 +243,14 @@ def rename_album(album_id: str, data: AlbumCreate):
     db.close()
     return {"ok": True}
 
+@app.put("/api/vault/albums/{album_id}/cover")
+def set_album_cover(album_id: str, data: AlbumCoverUpdate):
+    db = get_db()
+    db.execute("UPDATE albums SET cover_url=? WHERE id=?", (data.photo_url, album_id))
+    db.commit()
+    db.close()
+    return {"ok": True}
+
 # ══════════════════════════════════════════════════════════════════════════════
 # VAULT — PHOTOS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -323,6 +334,48 @@ def resize_photo(filename: str, width: int, height: int):
     resized = img.resize((width, height), Image.LANCZOS)
     resized.save(path)
     return {"ok": True, "url": f"/api/vault/photo/{filename}"}
+
+@app.put("/api/vault/photo/{photo_id}/replace")
+async def replace_photo(photo_id: str, file: UploadFile = File(...)):
+    db = get_db()
+    row = db.execute("SELECT * FROM photos WHERE id=?", (photo_id,)).fetchone()
+    if not row:
+        db.close()
+        raise HTTPException(404, "Photo introuvable")
+
+    old_filename = row["filename"]
+    album_id = row["album_id"]
+    created_at = row["created_at"]
+
+    old_path = VAULT_DIR / old_filename
+    if old_path.exists():
+        old_path.unlink()
+
+    ext = Path(file.filename).suffix.lower() or ".jpg"
+    new_filename = f"{photo_id}_{int(datetime.utcnow().timestamp())}{ext}"
+    new_path = VAULT_DIR / new_filename
+    with open(new_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    db.execute("UPDATE photos SET filename=? WHERE id=?", (new_filename, photo_id))
+
+    # Update album cover if it pointed to the old file
+    if album_id:
+        old_url = f"/api/vault/photo/{old_filename}"
+        album_row = db.execute("SELECT cover_url FROM albums WHERE id=?", (album_id,)).fetchone()
+        if album_row and album_row["cover_url"] == old_url:
+            db.execute("UPDATE albums SET cover_url=? WHERE id=?",
+                       (f"/api/vault/photo/{new_filename}", album_id))
+
+    db.commit()
+    db.close()
+    return {
+        "id": photo_id,
+        "filename": new_filename,
+        "url": f"/api/vault/photo/{new_filename}",
+        "album_id": album_id,
+        "created_at": created_at
+    }
 
 @app.put("/api/vault/photo/{photo_id}/move")
 def move_photo_to_album(photo_id: str, data: PhotoMoveToAlbum):

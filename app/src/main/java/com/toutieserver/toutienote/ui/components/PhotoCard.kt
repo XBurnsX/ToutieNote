@@ -32,7 +32,7 @@ fun PhotoCard(
         var loading by remember(photo.id) { mutableStateOf(true) }
 
         AsyncImage(
-            model = ApiService.photoUrl(photo.url),
+            model = ApiService.photoUrl(photo.url) + "?t=${photo.url.hashCode()}",
             contentDescription = photo.filename,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize(),

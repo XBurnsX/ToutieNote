@@ -1,11 +1,13 @@
 package com.toutieserver.toutienote.viewmodels
 
 import android.content.ContentResolver
+import android.content.ContentUris
 import android.content.ContentValues
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.toutieserver.toutienote.data.api.ApiService
@@ -40,6 +42,11 @@ class VaultViewModel : ViewModel() {
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
+
+    private val _pendingGalleryDeletions = MutableStateFlow<List<Uri>>(emptyList())
+    val pendingGalleryDeletions: StateFlow<List<Uri>> = _pendingGalleryDeletions
+
+    fun clearPendingDeletions() { _pendingGalleryDeletions.value = emptyList() }
 
     // ── PIN ────────────────────────────────────────────────────
     fun checkPin() {
@@ -145,6 +152,7 @@ class VaultViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             _uploading.value = true
             var uploaded = 0
+            val failedDeletions = mutableListOf<Uri>()
             for (uri in uris) {
                 try {
                     val filename = "vault_${System.currentTimeMillis()}.jpg"
@@ -153,9 +161,11 @@ class VaultViewModel : ViewModel() {
                         FileOutputStream(tempFile).use { output -> input.copyTo(output) }
                     }
                     ApiService.uploadPhoto(tempFile, filename, null)
-                    deleteFromGallery(contentResolver, uri)
                     tempFile.delete()
                     uploaded++
+                    if (!tryDeleteFromGallery(contentResolver, uri)) {
+                        resolveMediaStoreUri(contentResolver, uri)?.let { failedDeletions.add(it) }
+                    }
                 } catch (e: Exception) {
                     _error.value = "Erreur upload: ${e.message}"
                 }
@@ -163,6 +173,9 @@ class VaultViewModel : ViewModel() {
             _uploading.value = false
             if (uploaded > 0) _message.value = "$uploaded photo(s) ajoutée(s) ✓"
             loadPhotos()
+            if (failedDeletions.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                _pendingGalleryDeletions.value = failedDeletions
+            }
         }
     }
 
@@ -170,6 +183,7 @@ class VaultViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             _uploading.value = true
             var uploaded = 0
+            val failedDeletions = mutableListOf<Uri>()
             for (uri in uris) {
                 try {
                     val filename = "vault_${System.currentTimeMillis()}.jpg"
@@ -178,9 +192,11 @@ class VaultViewModel : ViewModel() {
                         FileOutputStream(tempFile).use { output -> input.copyTo(output) }
                     }
                     ApiService.uploadPhoto(tempFile, filename, albumId)
-                    deleteFromGallery(contentResolver, uri)
                     tempFile.delete()
                     uploaded++
+                    if (!tryDeleteFromGallery(contentResolver, uri)) {
+                        resolveMediaStoreUri(contentResolver, uri)?.let { failedDeletions.add(it) }
+                    }
                 } catch (e: Exception) {
                     _error.value = "Erreur upload: ${e.message}"
                 }
@@ -188,35 +204,55 @@ class VaultViewModel : ViewModel() {
             _uploading.value = false
             if (uploaded > 0) _message.value = "$uploaded photo(s) ajoutée(s) ✓"
             loadPhotosForAlbum(albumId)
+            if (failedDeletions.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                _pendingGalleryDeletions.value = failedDeletions
+            }
         }
     }
 
-    private fun deleteFromGallery(contentResolver: ContentResolver, uri: Uri) {
+    private fun tryDeleteFromGallery(contentResolver: ContentResolver, uri: Uri): Boolean {
         try {
-            val deleted = contentResolver.delete(uri, null, null)
-            if (deleted > 0) return
+            if (contentResolver.delete(uri, null, null) > 0) return true
+        } catch (_: SecurityException) {
+            return false
+        } catch (_: Exception) { }
 
-            val projection = arrayOf(MediaStore.Images.Media.DATA)
-            contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+        try {
+            val msUri = resolveMediaStoreUri(contentResolver, uri) ?: return false
+            if (contentResolver.delete(msUri, null, null) > 0) return true
+        } catch (_: SecurityException) {
+            return false
+        } catch (_: Exception) { }
+
+        return false
+    }
+
+    private fun resolveMediaStoreUri(contentResolver: ContentResolver, uri: Uri): Uri? {
+        var displayName: String? = null
+        try {
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) displayName = cursor.getString(0)
+            }
+        } catch (_: Exception) { }
+        if (displayName == null) return null
+
+        try {
+            contentResolver.query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Images.Media._ID),
+                "${MediaStore.Images.Media.DISPLAY_NAME} = ?",
+                arrayOf(displayName!!),
+                null
+            )?.use { cursor ->
                 if (cursor.moveToFirst()) {
-                    val pathIndex = cursor.getColumnIndex(MediaStore.Images.Media.DATA)
-                    if (pathIndex >= 0) {
-                        val filePath = cursor.getString(pathIndex)
-                        if (filePath != null) {
-                            val file = File(filePath)
-                            if (file.exists()) {
-                                file.delete()
-                                contentResolver.delete(
-                                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                                    "${MediaStore.Images.Media.DATA}=?",
-                                    arrayOf(filePath)
-                                )
-                            }
-                        }
-                    }
+                    return ContentUris.withAppendedId(
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        cursor.getLong(0)
+                    )
                 }
             }
         } catch (_: Exception) { }
+        return null
     }
 
     // ── Export vers la galerie ──────────────────────────────────

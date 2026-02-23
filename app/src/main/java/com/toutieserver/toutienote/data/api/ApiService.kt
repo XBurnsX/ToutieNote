@@ -98,6 +98,10 @@ object ApiService {
     }
 
     // ── Vault Albums ───────────────────────────────────────────
+    private fun optNullableString(obj: JSONObject, key: String): String? {
+        return if (obj.isNull(key)) null else obj.optString(key)
+    }
+
     fun getAlbums(): List<Album> {
         val req = okhttp3.Request.Builder().url("$base/api/vault/albums").get().build()
         val body = executeForBody(req)
@@ -107,7 +111,7 @@ object ApiService {
             Album(
                 obj.getString("id"),
                 obj.getString("name"),
-                obj.optString("cover_url", null),
+                optNullableString(obj, "cover_url"),
                 obj.optString("created_at"),
                 obj.optInt("photo_count", 0)
             )
@@ -123,7 +127,7 @@ object ApiService {
         return Album(
             obj.getString("id"),
             obj.getString("name"),
-            obj.optString("cover_url", null),
+            optNullableString(obj, "cover_url"),
             obj.optString("created_at"),
             obj.optInt("photo_count", 0)
         )
@@ -166,7 +170,7 @@ object ApiService {
                 obj.getString("url"),
                 obj.optLong("size"),
                 obj.optString("created_at"),
-                obj.optString("album_id", null)
+                optNullableString(obj, "album_id")
             )
         }
     }
@@ -206,7 +210,7 @@ object ApiService {
             obj.getString("url"),
             0L,
             obj.optString("created_at"),
-            obj.optString("album_id", null)
+            optNullableString(obj, "album_id")
         )
     }
 
