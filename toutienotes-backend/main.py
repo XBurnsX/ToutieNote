@@ -11,7 +11,11 @@ try:
     import imagehash
 except ImportError:
     imagehash = None
-import io
+try:
+    import numpy as np
+except ImportError:
+    np = None
+import io, sys
 
 app = FastAPI()
 
@@ -60,8 +64,8 @@ def init_db():
             name       TEXT NOT NULL,
             cover_url  TEXT,
             created_at TEXT NOT NULL,
-            pin_hash   TEXT,       -- NOUVEAU: PIN spécifique à l'album
-            sort_order INTEGER DEFAULT 0 -- NOUVEAU: Organisation manuelle
+            pin_hash   TEXT,
+            sort_order INTEGER DEFAULT 0
         )
     """)
     db.execute("""
@@ -69,15 +73,14 @@ def init_db():
             id                 TEXT PRIMARY KEY,
             album_id           TEXT,
             filename           TEXT NOT NULL,
-            thumbnail_filename TEXT,       -- NOUVEAU: Space Saver (Version compressée)
-            media_type         TEXT DEFAULT 'image', -- NOUVEAU: 'image' ou 'video'
-            phash              TEXT,       -- NOUVEAU: Empreinte visuelle pour doublons
-            sort_order         INTEGER DEFAULT 0, -- NOUVEAU: Ordre
+            thumbnail_filename TEXT,
+            media_type         TEXT DEFAULT 'image',
+            phash              TEXT,
+            sort_order         INTEGER DEFAULT 0,
             created_at         TEXT NOT NULL,
             FOREIGN KEY (album_id) REFERENCES albums(id) ON DELETE CASCADE
         )
     """)
-    # Migrations: add columns if they don't exist yet
     migrations = [
         ("albums", "pin_hash", "TEXT"),
         ("albums", "sort_order", "INTEGER DEFAULT 0"),
@@ -105,7 +108,7 @@ class NoteIn(BaseModel):
     content: str = ""
 
 class PinSetup(BaseModel):
-    pin: str  # 4 digits
+    pin: str
 
 class PinVerify(BaseModel):
     pin: str
@@ -145,7 +148,6 @@ def compute_phash(image_path: Path) -> str:
         return ""
 
 def compute_crop_hash(image_path: Path):
-    """Compute crop-resistant multi-hash using phash per segment (more discriminating)."""
     if imagehash is None:
         return None
     try:
@@ -155,7 +157,7 @@ def compute_crop_hash(image_path: Path):
         return None
 
 def are_crop_similar(ch1, ch2) -> bool:
-    """Check if two images are crops of each other by comparing segment hashes."""
+    """Check if two images are crops of each other. FIXED: 25% threshold."""
     try:
         segs1 = ch1.segment_hashes
         segs2 = ch2.segment_hashes
@@ -181,11 +183,11 @@ def are_crop_similar(ch1, ch2) -> bool:
                     best_j = j
             except Exception:
                 pass
-        if best_diff <= 14 and best_j >= 0:
+        if best_diff <= 12 and best_j >= 0:
             matched += 1
             used.add(best_j)
 
-    needed = max(1, int(len(small) * 0.10))
+    needed = max(1, int(len(small) * 0.25))
     return matched >= needed
 
 def compute_resize_hash(image_path: Path):
@@ -197,13 +199,45 @@ def compute_resize_hash(image_path: Path):
     except Exception:
         return None
 
+# ── CLIP model (lazy-load, ~350MB first download) ─────────────────────────────
+_clip_model = None
+
+def get_clip_model():
+    global _clip_model
+    if _clip_model is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+            _log("Loading CLIP model (first time downloads ~350MB)...")
+            _clip_model = SentenceTransformer("clip-ViT-B-32")
+            _log("CLIP model loaded ✓")
+        except ImportError:
+            _log("sentence-transformers not installed, CLIP disabled")
+            return None
+    return _clip_model
+
+def compute_clip_embedding(image_path: Path):
+    model = get_clip_model()
+    if model is None:
+        return None
+    try:
+        img = Image.open(image_path).convert("RGB")
+        return model.encode(img, normalize_embeddings=True)
+    except Exception as e:
+        _log(f"CLIP embedding failed for {image_path.name}: {e}")
+        return None
+
+def clip_cosine_sim(a, b) -> float:
+    if np is None:
+        return 0.0
+    return float(np.dot(a, b))
+
+# ── Other helpers ──────────────────────────────────────────────────────────────
 def is_duplicate(new_phash: str, threshold: int = 5):
     if not new_phash or imagehash is None:
         return None
     db = get_db()
     rows = db.execute("SELECT id, phash FROM photos WHERE phash IS NOT NULL AND media_type='image'").fetchall()
     db.close()
-    
     for row in rows:
         existing_hash = row["phash"]
         if existing_hash:
@@ -272,7 +306,6 @@ def delete_note(note_id: str):
 
 @app.get("/api/vault/pin-exists")
 def pin_exists():
-    """Check if PIN has been set (first time setup)"""
     return {"exists": get_config("vault_pin") is not None}
 
 @app.post("/api/vault/pin-setup")
@@ -295,8 +328,6 @@ def verify_pin(data: PinVerify):
 
 @app.post("/api/vault/reset-pin")
 def reset_pin(data: PinVerify):
-    """Verify old PIN then allow reset — client sends old PIN, then calls pin-setup won't work since PIN exists.
-       So this endpoint verifies old PIN and clears it."""
     stored = get_config("vault_pin")
     if stored and hash_pin(data.pin) != stored:
         raise HTTPException(401, "PIN incorrect")
@@ -329,7 +360,7 @@ def create_album(data: AlbumCreate):
     db = get_db()
     album_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
-    db.execute("INSERT INTO albums (id, name, cover_url, created_at) VALUES(?,?,?,?)", 
+    db.execute("INSERT INTO albums (id, name, cover_url, created_at) VALUES(?,?,?,?)",
                (album_id, data.name, None, now))
     db.commit()
     db.close()
@@ -337,7 +368,6 @@ def create_album(data: AlbumCreate):
 
 @app.post("/api/vault/albums/{album_id}/lock")
 def lock_album(album_id: str, data: AlbumLock):
-    """Verrouille un album avec un PIN spécifique"""
     db = get_db()
     hashed = hash_pin(data.pin)
     db.execute("UPDATE albums SET pin_hash=? WHERE id=?", (hashed, album_id))
@@ -351,7 +381,7 @@ def verify_album_lock(album_id: str, data: AlbumLock):
     row = db.execute("SELECT pin_hash FROM albums WHERE id=?", (album_id,)).fetchone()
     db.close()
     if not row or not row["pin_hash"]:
-        return {"ok": True} # Pas de verrou
+        return {"ok": True}
     if hash_pin(data.pin) != row["pin_hash"]:
         raise HTTPException(401, "PIN incorrect pour cet album")
     return {"ok": True}
@@ -359,7 +389,6 @@ def verify_album_lock(album_id: str, data: AlbumLock):
 @app.delete("/api/vault/albums/{album_id}")
 def delete_album(album_id: str):
     db = get_db()
-    # Delete all photos in this album (files + db records)
     photos = db.execute("SELECT filename FROM photos WHERE album_id=?", (album_id,)).fetchall()
     for p in photos:
         path = VAULT_DIR / p["filename"]
@@ -401,7 +430,7 @@ def unlock_album(album_id: str, data: AlbumLock):
     return {"ok": True}
 
 @app.put("/api/vault/albums/{album_id}/cover")
-def set_album_cover(album_id: str, data: AlbumCoverUpdate):
+def update_album_cover(album_id: str, data: AlbumCoverUpdate):
     db = get_db()
     db.execute("UPDATE albums SET cover_url=? WHERE id=?", (data.photo_url, album_id))
     db.commit()
@@ -414,7 +443,6 @@ def set_album_cover(album_id: str, data: AlbumCoverUpdate):
 
 @app.get("/api/vault/photos")
 def list_photos(album_id: str = None):
-    """List all photos, optionally filtered by album_id"""
     db = get_db()
     if album_id:
         rows = db.execute("SELECT * FROM photos WHERE album_id=? ORDER BY COALESCE(favorite,0) DESC, sort_order ASC, created_at DESC", (album_id,)).fetchall()
@@ -443,11 +471,11 @@ async def upload_photo(file: UploadFile = File(...), album_id: str = None):
     is_video = ext in [".mp4", ".mov", ".mkv"]
     if ext not in [".jpg", ".jpeg", ".png", ".webp"] and not is_video:
         raise HTTPException(400, "Format non supporté")
-        
+
     photo_id = str(uuid.uuid4())
     filename = f"{photo_id}{ext}"
     dest = VAULT_DIR / filename
-    
+
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
@@ -455,38 +483,31 @@ async def upload_photo(file: UploadFile = File(...), album_id: str = None):
     thumbnail_filename = None
     phash_val = None
 
-    # SPACE SAVER & PHASH : Générer la miniature et l'empreinte si c'est une image
     if not is_video:
         try:
             img = Image.open(dest)
-            
             phash_val = compute_phash(dest)
-
-            # Génération de la miniature (Thumbnail)
-            img.thumbnail((500, 500)) # Redimensionne en gardant les proportions
+            img.thumbnail((500, 500))
             thumbnail_filename = f"thumb_{photo_id}.webp"
             thumb_dest = VAULT_DIR / thumbnail_filename
             img.save(thumb_dest, format="WEBP", quality=80)
         except Exception as e:
             print(f"Erreur traitement image: {e}")
 
-    # Check for duplicates BEFORE inserting (so it doesn't match itself)
     duplicate_of = None
     if phash_val:
         dup = is_duplicate(phash_val)
         if dup:
             duplicate_of = dup["id"]
 
-    # Save to DB
     db = get_db()
     now = datetime.utcnow().isoformat()
     db.execute("""
-        INSERT INTO photos (id, album_id, filename, thumbnail_filename, media_type, phash, created_at) 
+        INSERT INTO photos (id, album_id, filename, thumbnail_filename, media_type, phash, created_at)
         VALUES(?,?,?,?,?,?,?)
     """, (photo_id, album_id, filename, thumbnail_filename, media_type, phash_val, now))
     db.commit()
 
-    # Update album cover if this is the first photo
     if album_id:
         count = db.execute("SELECT COUNT(*) as cnt FROM photos WHERE album_id=?", (album_id,)).fetchone()["cnt"]
         if count == 1:
@@ -505,13 +526,153 @@ async def upload_photo(file: UploadFile = File(...), album_id: str = None):
         "duplicate_of": duplicate_of
     }
 
+@app.get("/api/vault/photo/{filename}")
+def get_photo(filename: str):
+    path = VAULT_DIR / filename
+    if not path.exists():
+        raise HTTPException(404, "Photo introuvable")
+    return FileResponse(path)
+
+@app.post("/api/vault/crop/{filename}")
+def crop_photo(filename: str, params: CropParams):
+    path = VAULT_DIR / filename
+    if not path.exists():
+        raise HTTPException(404, "Photo introuvable")
+    img = Image.open(path)
+    cropped = img.crop((params.x, params.y, params.x + params.width, params.y + params.height))
+    cropped.save(path)
+    return {"ok": True, "url": f"/api/vault/photo/{filename}"}
+
+@app.post("/api/vault/resize/{filename}")
+def resize_photo(filename: str, width: int, height: int):
+    path = VAULT_DIR / filename
+    if not path.exists():
+        raise HTTPException(404, "Photo introuvable")
+    img = Image.open(path)
+    resized = img.resize((width, height), Image.LANCZOS)
+    resized.save(path)
+    return {"ok": True, "url": f"/api/vault/photo/{filename}"}
+
+@app.put("/api/vault/photo/{photo_id}/replace")
+async def replace_photo(photo_id: str, file: UploadFile = File(...)):
+    db = get_db()
+    row = db.execute("SELECT * FROM photos WHERE id=?", (photo_id,)).fetchone()
+    if not row:
+        db.close()
+        raise HTTPException(404, "Photo introuvable")
+
+    old_filename = row["filename"]
+    old_thumb = dict(row).get("thumbnail_filename")
+    album_id = row["album_id"]
+    created_at = row["created_at"]
+
+    old_path = VAULT_DIR / old_filename
+    if old_path.exists():
+        old_path.unlink()
+    if old_thumb:
+        old_thumb_path = VAULT_DIR / old_thumb
+        if old_thumb_path.exists():
+            old_thumb_path.unlink()
+
+    ext = Path(file.filename).suffix.lower() or ".jpg"
+    new_filename = f"{photo_id}_{int(datetime.utcnow().timestamp())}{ext}"
+    new_path = VAULT_DIR / new_filename
+    with open(new_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    thumbnail_filename = None
+    phash_val = None
+    try:
+        img = Image.open(new_path)
+        phash_val = str(imagehash.phash(img)) if imagehash else None
+        img.thumbnail((500, 500))
+        thumbnail_filename = f"thumb_{photo_id}_{int(datetime.utcnow().timestamp())}.webp"
+        thumb_dest = VAULT_DIR / thumbnail_filename
+        img.save(thumb_dest, format="WEBP", quality=80)
+    except Exception:
+        pass
+
+    db.execute(
+        "UPDATE photos SET filename=?, thumbnail_filename=?, phash=? WHERE id=?",
+        (new_filename, thumbnail_filename, phash_val, photo_id)
+    )
+
+    if album_id:
+        old_url = f"/api/vault/photo/{old_filename}"
+        album_row = db.execute("SELECT cover_url FROM albums WHERE id=?", (album_id,)).fetchone()
+        if album_row and album_row["cover_url"] == old_url:
+            db.execute("UPDATE albums SET cover_url=? WHERE id=?",
+                       (f"/api/vault/photo/{new_filename}", album_id))
+
+    db.commit()
+    db.close()
+
+    thumb_url = f"/api/vault/photo/{thumbnail_filename}" if thumbnail_filename else f"/api/vault/photo/{new_filename}"
+    return {
+        "id": photo_id,
+        "filename": new_filename,
+        "url": f"/api/vault/photo/{new_filename}",
+        "thumbnail_url": thumb_url,
+        "album_id": album_id,
+        "created_at": created_at
+    }
+
+@app.put("/api/vault/photo/{photo_id}/move")
+def move_photo_to_album(photo_id: str, data: PhotoMoveToAlbum):
+    db = get_db()
+    db.execute("UPDATE photos SET album_id=? WHERE id=?", (data.album_id, photo_id))
+    db.commit()
+    db.close()
+    return {"ok": True}
+
+@app.put("/api/vault/photo/{photo_id}/favorite")
+def toggle_favorite(photo_id: str):
+    db = get_db()
+    row = db.execute("SELECT favorite FROM photos WHERE id=?", (photo_id,)).fetchone()
+    if not row:
+        db.close()
+        raise HTTPException(404, "Photo not found")
+    new_val = 0 if (dict(row).get("favorite") or 0) else 1
+    db.execute("UPDATE photos SET favorite=? WHERE id=?", (new_val, photo_id))
+    db.commit()
+    db.close()
+    return {"ok": True, "favorite": new_val == 1}
+
+@app.delete("/api/vault/photo/{filename}")
+def delete_photo(filename: str):
+    path = VAULT_DIR / filename
+    if path.exists():
+        path.unlink()
+    db = get_db()
+    # Also delete thumbnail
+    row = db.execute("SELECT thumbnail_filename FROM photos WHERE filename=?", (filename,)).fetchone()
+    if row and row["thumbnail_filename"]:
+        thumb_path = VAULT_DIR / row["thumbnail_filename"]
+        if thumb_path.exists():
+            thumb_path.unlink()
+    db.execute("DELETE FROM photos WHERE filename=?", (filename,))
+    db.commit()
+    db.close()
+    return {"ok": True}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VAULT — DUPLICATE SCAN (4-tier: pHash + crop_resistant + resize + CLIP)
+# ══════════════════════════════════════════════════════════════════════════════
+
 scan_progress = {}
-import sys
+
 def _log(msg):
     print(f"[Doublon] {msg}", flush=True)
     sys.stdout.flush()
 
 def _run_scan(job_id: str, album_id):
+    """
+    4-tier duplicate scan:
+      1. pHash exact     (threshold ≤ 6)   → identical/near-identical
+      2. crop_resistant   (segment match)   → light crops
+      3. resize pHash     (threshold ≤ 18)  → resizes
+      4. CLIP embeddings  (cosine ≥ 0.85)   → heavy crops, rotations, edits
+    """
     try:
         _log("A: _run_scan démarré")
         db = get_db()
@@ -525,66 +686,97 @@ def _run_scan(job_id: str, album_id):
         scan_progress[job_id]["total"] = total
         _log(f"B: total={total} photos, imagehash={'OK' if imagehash else 'NON'}")
 
-        if not imagehash or total < 2:
-            scan_progress[job_id].update(done=True, groups=[], scanned=total)
+        if total < 2:
+            scan_progress[job_id].update(done=True, groups=[], scanned=total, percent=100)
             return
 
-        _log("C: calcul des hash (crop + resize)...")
+        # ── Phase 1: Compute all hashes (0-30%) ─────────────────────────────
+        _log("C: calcul des hash (phash + crop + resize + CLIP)...")
         crop_cache = {}
         resize_cache = {}
+        clip_cache = {}
+
         for i, p in enumerate(photos):
             path = VAULT_DIR / p["filename"]
             if path.exists():
-                ch = compute_crop_hash(path)
-                if ch is not None:
-                    crop_cache[p["id"]] = ch
-                rh = compute_resize_hash(path)
-                if rh is not None:
-                    resize_cache[p["id"]] = rh
+                if imagehash:
+                    ch = compute_crop_hash(path)
+                    if ch is not None:
+                        crop_cache[p["id"]] = ch
+                    rh = compute_resize_hash(path)
+                    if rh is not None:
+                        resize_cache[p["id"]] = rh
+                # CLIP embedding (the magic for heavy crops)
+                emb = compute_clip_embedding(path)
+                if emb is not None:
+                    clip_cache[p["id"]] = emb
+
             scan_progress[job_id]["scanned"] = i + 1
             scan_progress[job_id]["percent"] = min(30, int((i + 1) / total * 30))
 
-        _log(f"D: crop_cache={len(crop_cache)} resize_cache={len(resize_cache)}")
+        _log(f"D: crop_cache={len(crop_cache)} resize_cache={len(resize_cache)} clip_cache={len(clip_cache)}")
+
+        # ── Phase 2: Compare all pairs (30-100%) ────────────────────────────
         total_pairs = total * (total - 1) // 2 if total > 1 else 0
         _log(f"E: comparaison de {total_pairs} paires...")
         pairs_done = 0
         used = set()
         groups = []
 
+        CLIP_THRESHOLD = 0.85
+
         for i, p1 in enumerate(photos):
             if p1["id"] in used:
                 continue
             group = [p1]
             used.add(p1["id"])
+
             for j in range(i + 1, len(photos)):
                 p2 = photos[j]
                 if p2["id"] in used:
                     continue
 
                 similar = False
-                if p1.get("phash") and p2.get("phash"):
+                match_reason = ""
+
+                # Tier 1: pHash exact (stored in DB)
+                if not similar and p1.get("phash") and p2.get("phash"):
                     try:
                         diff = imagehash.hex_to_hash(p1["phash"]) - imagehash.hex_to_hash(p2["phash"])
                         if diff <= 6:
                             similar = True
+                            match_reason = f"phash(diff={diff})"
                     except Exception:
                         pass
 
+                # Tier 2: crop_resistant_hash (segment matching)
                 if not similar and p1["id"] in crop_cache and p2["id"] in crop_cache:
-                    similar = are_crop_similar(crop_cache[p1["id"]], crop_cache[p2["id"]])
+                    if are_crop_similar(crop_cache[p1["id"]], crop_cache[p2["id"]]):
+                        similar = True
+                        match_reason = "crop_resistant"
 
+                # Tier 3: resize hash
                 if not similar and p1["id"] in resize_cache and p2["id"] in resize_cache:
                     try:
                         diff = resize_cache[p1["id"]] - resize_cache[p2["id"]]
-                        similar = diff <= 18
+                        if diff <= 18:
+                            similar = True
+                            match_reason = f"resize(diff={diff})"
                     except Exception:
                         pass
+
+                # Tier 4: CLIP embeddings (catches heavy crops, rotations, edits)
+                if not similar and p1["id"] in clip_cache and p2["id"] in clip_cache:
+                    cos_sim = clip_cosine_sim(clip_cache[p1["id"]], clip_cache[p2["id"]])
+                    if cos_sim >= CLIP_THRESHOLD:
+                        similar = True
+                        match_reason = f"CLIP(sim={cos_sim:.3f})"
 
                 if similar:
                     group.append(p2)
                     used.add(p2["id"])
                     if len(group) == 2:
-                        _log(f"  MATCH phash/crop/resize: {p1.get('filename')} ~ {p2.get('filename')}")
+                        _log(f"  MATCH {match_reason}: {p1.get('filename')} ~ {p2.get('filename')}")
 
                 pairs_done += 1
                 if pairs_done % 500 == 0:
@@ -602,6 +794,8 @@ def _run_scan(job_id: str, album_id):
         scan_progress[job_id].update(done=True, groups=groups, scanned=total, percent=100)
     except Exception as e:
         _log(f"Z: ERREUR {e}")
+        import traceback
+        _log(traceback.format_exc())
         scan_progress[job_id]["error"] = str(e)
         scan_progress[job_id]["done"] = True
 
@@ -648,134 +842,6 @@ def scan_duplicates_sync(album_id: str = None):
     _run_scan("_sync", album_id)
     s = scan_progress.pop("_sync", {})
     return {"groups": s.get("groups", []), "scanned": s.get("scanned", 0)}
-
-@app.get("/api/vault/photo/{filename}")
-def get_photo(filename: str):
-    path = VAULT_DIR / filename
-    if not path.exists():
-        raise HTTPException(404, "Photo introuvable")
-    return FileResponse(path)
-
-@app.post("/api/vault/crop/{filename}")
-def crop_photo(filename: str, params: CropParams):
-    path = VAULT_DIR / filename
-    if not path.exists():
-        raise HTTPException(404, "Photo introuvable")
-    img = Image.open(path)
-    cropped = img.crop((params.x, params.y, params.x + params.width, params.y + params.height))
-    cropped.save(path)  # remplace l'original dans le vault
-    return {"ok": True, "url": f"/api/vault/photo/{filename}"}
-
-@app.post("/api/vault/resize/{filename}")
-def resize_photo(filename: str, width: int, height: int):
-    path = VAULT_DIR / filename
-    if not path.exists():
-        raise HTTPException(404, "Photo introuvable")
-    img = Image.open(path)
-    resized = img.resize((width, height), Image.LANCZOS)
-    resized.save(path)
-    return {"ok": True, "url": f"/api/vault/photo/{filename}"}
-
-@app.put("/api/vault/photo/{photo_id}/replace")
-async def replace_photo(photo_id: str, file: UploadFile = File(...)):
-    db = get_db()
-    row = db.execute("SELECT * FROM photos WHERE id=?", (photo_id,)).fetchone()
-    if not row:
-        db.close()
-        raise HTTPException(404, "Photo introuvable")
-
-    old_filename = row["filename"]
-    old_thumb = dict(row).get("thumbnail_filename")
-    album_id = row["album_id"]
-    created_at = row["created_at"]
-
-    # Delete old files
-    old_path = VAULT_DIR / old_filename
-    if old_path.exists():
-        old_path.unlink()
-    if old_thumb:
-        old_thumb_path = VAULT_DIR / old_thumb
-        if old_thumb_path.exists():
-            old_thumb_path.unlink()
-
-    ext = Path(file.filename).suffix.lower() or ".jpg"
-    new_filename = f"{photo_id}_{int(datetime.utcnow().timestamp())}{ext}"
-    new_path = VAULT_DIR / new_filename
-    with open(new_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-
-    # Regenerate thumbnail and phash
-    thumbnail_filename = None
-    phash_val = None
-    try:
-        img = Image.open(new_path)
-        phash_val = str(imagehash.phash(img)) if imagehash else None
-        img.thumbnail((500, 500))
-        thumbnail_filename = f"thumb_{photo_id}_{int(datetime.utcnow().timestamp())}.webp"
-        thumb_dest = VAULT_DIR / thumbnail_filename
-        img.save(thumb_dest, format="WEBP", quality=80)
-    except Exception:
-        pass
-
-    db.execute(
-        "UPDATE photos SET filename=?, thumbnail_filename=?, phash=? WHERE id=?",
-        (new_filename, thumbnail_filename, phash_val, photo_id)
-    )
-
-    # Update album cover if it pointed to the old file
-    if album_id:
-        old_url = f"/api/vault/photo/{old_filename}"
-        album_row = db.execute("SELECT cover_url FROM albums WHERE id=?", (album_id,)).fetchone()
-        if album_row and album_row["cover_url"] == old_url:
-            db.execute("UPDATE albums SET cover_url=? WHERE id=?",
-                       (f"/api/vault/photo/{new_filename}", album_id))
-
-    db.commit()
-    db.close()
-
-    thumb_url = f"/api/vault/photo/{thumbnail_filename}" if thumbnail_filename else f"/api/vault/photo/{new_filename}"
-    return {
-        "id": photo_id,
-        "filename": new_filename,
-        "url": f"/api/vault/photo/{new_filename}",
-        "thumbnail_url": thumb_url,
-        "album_id": album_id,
-        "created_at": created_at
-    }
-
-@app.put("/api/vault/photo/{photo_id}/move")
-def move_photo_to_album(photo_id: str, data: PhotoMoveToAlbum):
-    db = get_db()
-    db.execute("UPDATE photos SET album_id=? WHERE id=?", (data.album_id, photo_id))
-    db.commit()
-    db.close()
-    return {"ok": True}
-
-@app.put("/api/vault/photo/{photo_id}/favorite")
-def toggle_favorite(photo_id: str):
-    db = get_db()
-    row = db.execute("SELECT favorite FROM photos WHERE id=?", (photo_id,)).fetchone()
-    if not row:
-        db.close()
-        raise HTTPException(404, "Photo not found")
-    new_val = 0 if (dict(row).get("favorite") or 0) else 1
-    db.execute("UPDATE photos SET favorite=? WHERE id=?", (new_val, photo_id))
-    db.commit()
-    db.close()
-    return {"ok": True, "favorite": new_val == 1}
-
-@app.delete("/api/vault/photo/{filename}")
-def delete_photo(filename: str):
-    # Delete from filesystem
-    path = VAULT_DIR / filename
-    if path.exists():
-        path.unlink()
-    # Delete from DB
-    db = get_db()
-    db.execute("DELETE FROM photos WHERE filename=?", (filename,))
-    db.commit()
-    db.close()
-    return {"ok": True}
 
 # ── Static files ───────────────────────────────────────────────────────────────
 app.mount("/static", StaticFiles(directory="/app/static"), name="static")
