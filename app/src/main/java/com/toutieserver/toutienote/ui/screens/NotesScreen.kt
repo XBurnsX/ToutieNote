@@ -35,13 +35,24 @@ fun NotesScreen(
     val notes by notesVm.notes.collectAsState()
     val loading by notesVm.loading.collectAsState()
     val pinExists by vaultVm.pinExists.collectAsState()
+    val vaultError by vaultVm.error.collectAsState()
 
     var selectedId by remember { mutableStateOf<String?>(null) }
     var showPin by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf<Note?>(null) }
+    val snackbarHostState = remember { SnackbarHostState() }
 
     var tapCount by remember { mutableIntStateOf(0) }
     var lastTapTime by remember { mutableLongStateOf(0L) }
+
+    // Afficher les erreurs du vault (ex: serveur injoignable)
+    LaunchedEffect(vaultError) {
+        vaultError?.let {
+            snackbarHostState.showSnackbar(it)
+            vaultVm.clearError()
+            showPin = false
+        }
+    }
 
     fun onSecretTap() {
         val now = System.currentTimeMillis()
@@ -87,6 +98,7 @@ fun NotesScreen(
 
     Scaffold(
         containerColor = BgColor,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {

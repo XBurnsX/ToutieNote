@@ -13,7 +13,9 @@ data class Photo(
     val url: String,
     val size: Long,
     val createdAt: String,
-    val albumId: String? = null
+    val albumId: String? = null,
+    val thumbnailUrl: String = url, // Ajouté pour le Space Saver
+    val mediaType: String = "image" // Ajouté pour les Vidéos
 )
 
 data class Album(
@@ -21,5 +23,7 @@ data class Album(
     val name: String,
     val coverUrl: String?,
     val createdAt: String,
-    val photoCount: Int
+    val photoCount: Int,
+    val isLocked: Boolean = false,  // Ajouté pour le PIN individuel
+    val sortOrder: Int = 0          // Ajouté pour l'ordre manuel
 )

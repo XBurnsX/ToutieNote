@@ -46,7 +46,11 @@ class VaultViewModel : ViewModel() {
     private val _pendingGalleryDeletions = MutableStateFlow<List<Uri>>(emptyList())
     val pendingGalleryDeletions: StateFlow<List<Uri>> = _pendingGalleryDeletions
 
+    private val _duplicateCount = MutableStateFlow(0)
+    val duplicateCount: StateFlow<Int> = _duplicateCount
+
     fun clearPendingDeletions() { _pendingGalleryDeletions.value = emptyList() }
+    fun clearDuplicateCount() { _duplicateCount.value = 0 }
 
     // ── PIN ────────────────────────────────────────────────────
     fun checkPin() {
@@ -129,6 +133,59 @@ class VaultViewModel : ViewModel() {
         }
     }
 
+    fun lockAlbum(albumId: String, pin: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                ApiService.lockAlbum(albumId, pin)
+                _albums.value = _albums.value.map {
+                    if (it.id == albumId) it.copy(isLocked = true) else it
+                }
+                _message.value = "Album verrouillé 🔒"
+            } catch (e: Exception) { _error.value = "Erreur verrouillage: ${e.message}" }
+        }
+    }
+
+    fun unlockAlbum(albumId: String, pin: String, onSuccess: () -> Unit, onFail: () -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = ApiService.unlockAlbum(albumId, pin)
+            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                if (ok) {
+                    _albums.value = _albums.value.map {
+                        if (it.id == albumId) it.copy(isLocked = false) else it
+                    }
+                    _message.value = "Verrou retiré 🔓"
+                    onSuccess()
+                } else {
+                    onFail()
+                }
+            }
+        }
+    }
+
+    fun verifyAlbumLock(albumId: String, pin: String, onSuccess: () -> Unit, onFail: () -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = ApiService.verifyAlbumLock(albumId, pin)
+            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                if (ok) onSuccess() else onFail()
+            }
+        }
+    }
+
+    fun moveAlbum(albumId: String, direction: Int) {
+        val list = _albums.value.toMutableList()
+        val idx = list.indexOfFirst { it.id == albumId }
+        if (idx < 0) return
+        val newIdx = (idx + direction).coerceIn(0, list.lastIndex)
+        if (newIdx == idx) return
+        val item = list.removeAt(idx)
+        list.add(newIdx, item)
+        _albums.value = list
+        viewModelScope.launch(Dispatchers.IO) {
+            try { ApiService.reorderAlbums(list.map { it.id }) }
+            catch (_: Exception) { }
+        }
+    }
+
     // ── Photos ─────────────────────────────────────────────────
     fun loadPhotos() {
         viewModelScope.launch(Dispatchers.IO) {
@@ -148,21 +205,38 @@ class VaultViewModel : ViewModel() {
         }
     }
 
+    private fun resolveExtension(contentResolver: ContentResolver, uri: Uri): String {
+        val mime = contentResolver.getType(uri)
+        return when {
+            mime?.startsWith("video/") == true -> when (mime) {
+                "video/quicktime" -> ".mov"
+                "video/x-matroska" -> ".mkv"
+                else -> ".mp4"
+            }
+            mime == "image/png" -> ".png"
+            mime == "image/webp" -> ".webp"
+            else -> ".jpg"
+        }
+    }
+
     fun uploadPhotos(uris: List<Uri>, contentResolver: ContentResolver, cacheDir: File) {
         viewModelScope.launch(Dispatchers.IO) {
             _uploading.value = true
             var uploaded = 0
+            var dupes = 0
             val failedDeletions = mutableListOf<Uri>()
             for (uri in uris) {
                 try {
-                    val filename = "vault_${System.currentTimeMillis()}.jpg"
+                    val ext = resolveExtension(contentResolver, uri)
+                    val filename = "vault_${System.currentTimeMillis()}$ext"
                     val tempFile = File(cacheDir, filename)
                     contentResolver.openInputStream(uri)?.use { input ->
                         FileOutputStream(tempFile).use { output -> input.copyTo(output) }
                     }
-                    ApiService.uploadPhoto(tempFile, filename, null)
+                    val result = ApiService.uploadPhoto(tempFile, filename, null)
                     tempFile.delete()
                     uploaded++
+                    if (result.duplicateOf != null) dupes++
                     if (!tryDeleteFromGallery(contentResolver, uri)) {
                         resolveMediaStoreUri(contentResolver, uri)?.let { failedDeletions.add(it) }
                     }
@@ -171,7 +245,8 @@ class VaultViewModel : ViewModel() {
                 }
             }
             _uploading.value = false
-            if (uploaded > 0) _message.value = "$uploaded photo(s) ajoutée(s) ✓"
+            if (uploaded > 0) _message.value = "$uploaded fichier(s) ajouté(s) ✓"
+            if (dupes > 0) _duplicateCount.value = dupes
             loadPhotos()
             if (failedDeletions.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 _pendingGalleryDeletions.value = failedDeletions
@@ -183,17 +258,20 @@ class VaultViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             _uploading.value = true
             var uploaded = 0
+            var dupes = 0
             val failedDeletions = mutableListOf<Uri>()
             for (uri in uris) {
                 try {
-                    val filename = "vault_${System.currentTimeMillis()}.jpg"
+                    val ext = resolveExtension(contentResolver, uri)
+                    val filename = "vault_${System.currentTimeMillis()}$ext"
                     val tempFile = File(cacheDir, filename)
                     contentResolver.openInputStream(uri)?.use { input ->
                         FileOutputStream(tempFile).use { output -> input.copyTo(output) }
                     }
-                    ApiService.uploadPhoto(tempFile, filename, albumId)
+                    val result = ApiService.uploadPhoto(tempFile, filename, albumId)
                     tempFile.delete()
                     uploaded++
+                    if (result.duplicateOf != null) dupes++
                     if (!tryDeleteFromGallery(contentResolver, uri)) {
                         resolveMediaStoreUri(contentResolver, uri)?.let { failedDeletions.add(it) }
                     }
@@ -202,7 +280,8 @@ class VaultViewModel : ViewModel() {
                 }
             }
             _uploading.value = false
-            if (uploaded > 0) _message.value = "$uploaded photo(s) ajoutée(s) ✓"
+            if (uploaded > 0) _message.value = "$uploaded fichier(s) ajouté(s) ✓"
+            if (dupes > 0) _duplicateCount.value = dupes
             loadPhotosForAlbum(albumId)
             if (failedDeletions.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 _pendingGalleryDeletions.value = failedDeletions

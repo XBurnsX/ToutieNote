@@ -109,11 +109,13 @@ object ApiService {
         return (0 until arr.length()).map { i ->
             val obj = arr.getJSONObject(i)
             Album(
-                obj.getString("id"),
-                obj.getString("name"),
-                optNullableString(obj, "cover_url"),
-                obj.optString("created_at"),
-                obj.optInt("photo_count", 0)
+                id = obj.getString("id"),
+                name = obj.getString("name"),
+                coverUrl = optNullableString(obj, "cover_url"),
+                createdAt = obj.optString("created_at"),
+                photoCount = obj.optInt("photo_count", 0),
+                isLocked = obj.optBoolean("is_locked", false),
+                sortOrder = obj.optInt("sort_order", 0)
             )
         }
     }
@@ -125,11 +127,13 @@ object ApiService {
         val body = executeForBody(req)
         val obj = JSONObject(body)
         return Album(
-            obj.getString("id"),
-            obj.getString("name"),
-            optNullableString(obj, "cover_url"),
-            obj.optString("created_at"),
-            obj.optInt("photo_count", 0)
+            id = obj.getString("id"),
+            name = obj.getString("name"),
+            coverUrl = optNullableString(obj, "cover_url"),
+            createdAt = obj.optString("created_at"),
+            photoCount = obj.optInt("photo_count", 0),
+            isLocked = obj.optBoolean("is_locked", false),
+            sortOrder = obj.optInt("sort_order", 0)
         )
     }
 
@@ -151,6 +155,42 @@ object ApiService {
             .put(json.toRequestBody(JSON)).build()
         executeForOk(req)
     }
+    
+    // NOUVEAU: Fonctions pour verrouiller un album individuel
+    fun lockAlbum(albumId: String, pin: String) {
+        val json = JSONObject().put("pin", pin).toString()
+        val req = okhttp3.Request.Builder().url("$base/api/vault/albums/$albumId/lock")
+            .post(json.toRequestBody(JSON)).build()
+        executeForOk(req)
+    }
+
+    fun verifyAlbumLock(albumId: String, pin: String): Boolean {
+        return try {
+            val json = JSONObject().put("pin", pin).toString()
+            val req = okhttp3.Request.Builder().url("$base/api/vault/albums/$albumId/verify-lock")
+                .post(json.toRequestBody(JSON)).build()
+            val resp = client.newCall(req).execute()
+            resp.isSuccessful
+        } catch (e: Exception) { false }
+    }
+
+    fun unlockAlbum(albumId: String, pin: String): Boolean {
+        return try {
+            val json = JSONObject().put("pin", pin).toString()
+            val req = okhttp3.Request.Builder().url("$base/api/vault/albums/$albumId/unlock")
+                .post(json.toRequestBody(JSON)).build()
+            val resp = client.newCall(req).execute()
+            resp.isSuccessful
+        } catch (e: Exception) { false }
+    }
+
+    fun reorderAlbums(albumIds: List<String>) {
+        val arr = org.json.JSONArray(albumIds)
+        val json = JSONObject().put("album_ids", arr).toString()
+        val req = okhttp3.Request.Builder().url("$base/api/vault/albums/reorder")
+            .put(json.toRequestBody(JSON)).build()
+        executeForOk(req)
+    }
 
     // ── Vault Photos ───────────────────────────────────────────
     fun getPhotos(albumId: String? = null): List<Photo> {
@@ -164,20 +204,33 @@ object ApiService {
         val arr = JSONArray(body)
         return (0 until arr.length()).map { i ->
             val obj = arr.getJSONObject(i)
+            val basePhotoUrl = obj.getString("url")
             Photo(
-                obj.getString("id"),
-                obj.getString("filename"),
-                obj.getString("url"),
-                obj.optLong("size"),
-                obj.optString("created_at"),
-                optNullableString(obj, "album_id")
+                id = obj.getString("id"),
+                filename = obj.getString("filename"),
+                url = basePhotoUrl,
+                size = obj.optLong("size"),
+                createdAt = obj.optString("created_at"),
+                albumId = optNullableString(obj, "album_id"),
+                thumbnailUrl = obj.optString("thumbnail_url", basePhotoUrl), // Gère le Space Saver
+                mediaType = obj.optString("media_type", "image")             // Gère les vidéos
             )
         }
     }
 
-    fun uploadPhoto(file: File, filename: String, albumId: String? = null) {
+    data class UploadResult(val photoId: String, val duplicateOf: String?)
+
+    fun uploadPhoto(file: File, filename: String, albumId: String? = null): UploadResult {
+        val mimeType = when {
+            filename.endsWith(".mp4", ignoreCase = true) -> "video/mp4"
+            filename.endsWith(".mov", ignoreCase = true) -> "video/quicktime"
+            filename.endsWith(".webp", ignoreCase = true) -> "image/webp"
+            filename.endsWith(".png", ignoreCase = true) -> "image/png"
+            else -> "image/jpeg"
+        }
+        
         val bodyBuilder = MultipartBody.Builder().setType(MultipartBody.FORM)
-            .addFormDataPart("file", filename, file.asRequestBody("image/*".toMediaType()))
+            .addFormDataPart("file", filename, file.asRequestBody(mimeType.toMediaType()))
 
         val url = if (albumId != null) {
             "$base/api/vault/upload?album_id=$albumId"
@@ -186,7 +239,12 @@ object ApiService {
         }
 
         val req = okhttp3.Request.Builder().url(url).post(bodyBuilder.build()).build()
-        executeForOk(req)
+        val body = executeForBody(req)
+        val obj = JSONObject(body)
+        return UploadResult(
+            photoId = obj.getString("id"),
+            duplicateOf = optNullableString(obj, "duplicate_of")
+        )
     }
 
     /**
@@ -204,13 +262,16 @@ object ApiService {
             .build()
         val respBody = executeForBody(req)
         val obj = JSONObject(respBody)
+        val basePhotoUrl = obj.getString("url")
         return Photo(
-            obj.getString("id"),
-            obj.getString("filename"),
-            obj.getString("url"),
-            0L,
-            obj.optString("created_at"),
-            optNullableString(obj, "album_id")
+            id = obj.getString("id"),
+            filename = obj.getString("filename"),
+            url = basePhotoUrl,
+            size = 0L,
+            createdAt = obj.optString("created_at"),
+            albumId = optNullableString(obj, "album_id"),
+            thumbnailUrl = obj.optString("thumbnail_url", basePhotoUrl),
+            mediaType = obj.optString("media_type", "image")
         )
     }
 

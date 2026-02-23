@@ -9,6 +9,8 @@ import androidx.compose.runtime.*
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.toutieserver.toutienote.data.models.Album
 import com.toutieserver.toutienote.data.models.Photo
+import com.toutieserver.toutienote.ui.components.PinDialog
+import com.toutieserver.toutienote.ui.components.PinMode
 import com.toutieserver.toutienote.ui.screens.*
 import com.toutieserver.toutienote.ui.theme.ToutieNoteTheme
 import com.toutieserver.toutienote.viewmodels.NotesViewModel
@@ -50,6 +52,25 @@ fun AppNavigation() {
     val vaultVm: VaultViewModel = viewModel()
 
     var screen by remember { mutableStateOf<Screen>(Screen.Notes) }
+    val unlockedAlbums = remember { mutableStateListOf<String>() }
+    var pendingLockedAlbum by remember { mutableStateOf<Album?>(null) }
+
+    // PIN dialog for locked albums
+    pendingLockedAlbum?.let { album ->
+        PinDialog(
+            mode = PinMode.VERIFY,
+            onSuccess = {
+                unlockedAlbums.add(album.id)
+                pendingLockedAlbum = null
+                screen = Screen.AlbumPhotos(album)
+            },
+            onDismiss = { pendingLockedAlbum = null },
+            onVerify = { pin, ok, fail ->
+                vaultVm.verifyAlbumLock(album.id, pin, ok, fail)
+            },
+            onSetup = { _, _ -> },
+        )
+    }
 
     when (val s = screen) {
         is Screen.Notes -> NotesScreen(
@@ -70,7 +91,13 @@ fun AppNavigation() {
             BackHandler { screen = Screen.Notes }
             AlbumsListScreen(
                 vm = vaultVm,
-                onAlbumClick = { album -> screen = Screen.AlbumPhotos(album) },
+                onAlbumClick = { album ->
+                    if (album.isLocked && album.id !in unlockedAlbums) {
+                        pendingLockedAlbum = album
+                    } else {
+                        screen = Screen.AlbumPhotos(album)
+                    }
+                },
                 onBack = { screen = Screen.Notes },
             )
         }

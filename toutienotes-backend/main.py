@@ -7,6 +7,10 @@ import sqlite3, os, shutil, hashlib, uuid, json
 from datetime import datetime
 from pathlib import Path
 from PIL import Image
+try:
+    import imagehash
+except ImportError:
+    imagehash = None
 import io
 
 app = FastAPI()
@@ -55,18 +59,39 @@ def init_db():
             id         TEXT PRIMARY KEY,
             name       TEXT NOT NULL,
             cover_url  TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            pin_hash   TEXT,       -- NOUVEAU: PIN spécifique à l'album
+            sort_order INTEGER DEFAULT 0 -- NOUVEAU: Organisation manuelle
         )
     """)
     db.execute("""
         CREATE TABLE IF NOT EXISTS photos (
-            id         TEXT PRIMARY KEY,
-            album_id   TEXT,
-            filename   TEXT NOT NULL,
-            created_at TEXT NOT NULL,
+            id                 TEXT PRIMARY KEY,
+            album_id           TEXT,
+            filename           TEXT NOT NULL,
+            thumbnail_filename TEXT,       -- NOUVEAU: Space Saver (Version compressée)
+            media_type         TEXT DEFAULT 'image', -- NOUVEAU: 'image' ou 'video'
+            phash              TEXT,       -- NOUVEAU: Empreinte visuelle pour doublons
+            sort_order         INTEGER DEFAULT 0, -- NOUVEAU: Ordre
+            created_at         TEXT NOT NULL,
             FOREIGN KEY (album_id) REFERENCES albums(id) ON DELETE CASCADE
         )
     """)
+    # Migrations: add columns if they don't exist yet
+    migrations = [
+        ("albums", "pin_hash", "TEXT"),
+        ("albums", "sort_order", "INTEGER DEFAULT 0"),
+        ("photos", "thumbnail_filename", "TEXT"),
+        ("photos", "media_type", "TEXT DEFAULT 'image'"),
+        ("photos", "phash", "TEXT"),
+        ("photos", "sort_order", "INTEGER DEFAULT 0"),
+    ]
+    for table, col, col_type in migrations:
+        try:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+        except Exception:
+            pass
+
     db.commit()
     db.close()
 
@@ -98,9 +123,42 @@ class PhotoMoveToAlbum(BaseModel):
 class AlbumCoverUpdate(BaseModel):
     photo_url: str
 
+class AlbumLock(BaseModel):
+    pin: str
+
+class AlbumReorder(BaseModel):
+    album_ids: list
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def hash_pin(pin: str) -> str:
     return hashlib.sha256(pin.encode()).hexdigest()
+
+def compute_phash(image_path: Path) -> str:
+    if imagehash is None:
+        return ""
+    try:
+        img = Image.open(image_path)
+        return str(imagehash.phash(img))
+    except Exception:
+        return ""
+
+def is_duplicate(new_phash: str, threshold: int = 5):
+    if not new_phash or imagehash is None:
+        return None
+    db = get_db()
+    rows = db.execute("SELECT id, phash FROM photos WHERE phash IS NOT NULL AND media_type='image'").fetchall()
+    db.close()
+    
+    for row in rows:
+        existing_hash = row["phash"]
+        if existing_hash:
+            try:
+                diff = imagehash.hex_to_hash(new_phash) - imagehash.hex_to_hash(existing_hash)
+                if diff <= threshold:
+                    return dict(row)
+            except Exception:
+                pass
+    return None
 
 def get_config(key: str):
     db = get_db()
@@ -197,16 +255,17 @@ def reset_pin(data: PinVerify):
 @app.get("/api/vault/albums")
 def list_albums():
     db = get_db()
-    rows = db.execute("SELECT * FROM albums ORDER BY created_at DESC").fetchall()
+    rows = db.execute("SELECT * FROM albums ORDER BY sort_order ASC, created_at DESC").fetchall()
     db.close()
     albums = []
     for r in rows:
         album = dict(r)
-        # Count photos in this album
         db2 = get_db()
         count = db2.execute("SELECT COUNT(*) as cnt FROM photos WHERE album_id=?", (album["id"],)).fetchone()["cnt"]
         db2.close()
         album["photo_count"] = count
+        album["is_locked"] = bool(album.get("pin_hash"))
+        album.pop("pin_hash", None)
         albums.append(album)
     return albums
 
@@ -215,10 +274,32 @@ def create_album(data: AlbumCreate):
     db = get_db()
     album_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
-    db.execute("INSERT INTO albums VALUES(?,?,?,?)", (album_id, data.name, None, now))
+    db.execute("INSERT INTO albums (id, name, cover_url, created_at) VALUES(?,?,?,?)", 
+               (album_id, data.name, None, now))
     db.commit()
     db.close()
-    return {"id": album_id, "name": data.name, "cover_url": None, "created_at": now, "photo_count": 0}
+    return {"id": album_id, "name": data.name, "cover_url": None, "created_at": now, "photo_count": 0, "is_locked": False}
+
+@app.post("/api/vault/albums/{album_id}/lock")
+def lock_album(album_id: str, data: AlbumLock):
+    """Verrouille un album avec un PIN spécifique"""
+    db = get_db()
+    hashed = hash_pin(data.pin)
+    db.execute("UPDATE albums SET pin_hash=? WHERE id=?", (hashed, album_id))
+    db.commit()
+    db.close()
+    return {"ok": True}
+
+@app.post("/api/vault/albums/{album_id}/verify-lock")
+def verify_album_lock(album_id: str, data: AlbumLock):
+    db = get_db()
+    row = db.execute("SELECT pin_hash FROM albums WHERE id=?", (album_id,)).fetchone()
+    db.close()
+    if not row or not row["pin_hash"]:
+        return {"ok": True} # Pas de verrou
+    if hash_pin(data.pin) != row["pin_hash"]:
+        raise HTTPException(401, "PIN incorrect pour cet album")
+    return {"ok": True}
 
 @app.delete("/api/vault/albums/{album_id}")
 def delete_album(album_id: str):
@@ -235,10 +316,31 @@ def delete_album(album_id: str):
     db.close()
     return {"ok": True}
 
+@app.put("/api/vault/albums/reorder")
+def reorder_albums(data: AlbumReorder):
+    db = get_db()
+    for i, aid in enumerate(data.album_ids):
+        db.execute("UPDATE albums SET sort_order=? WHERE id=?", (i, aid))
+    db.commit()
+    db.close()
+    return {"ok": True}
+
 @app.put("/api/vault/albums/{album_id}")
 def rename_album(album_id: str, data: AlbumCreate):
     db = get_db()
     db.execute("UPDATE albums SET name=? WHERE id=?", (data.name, album_id))
+    db.commit()
+    db.close()
+    return {"ok": True}
+
+@app.post("/api/vault/albums/{album_id}/unlock")
+def unlock_album(album_id: str, data: AlbumLock):
+    db = get_db()
+    row = db.execute("SELECT pin_hash FROM albums WHERE id=?", (album_id,)).fetchone()
+    if row and row["pin_hash"] and hash_pin(data.pin) != row["pin_hash"]:
+        db.close()
+        raise HTTPException(401, "PIN incorrect")
+    db.execute("UPDATE albums SET pin_hash=NULL WHERE id=?", (album_id,))
     db.commit()
     db.close()
     return {"ok": True}
@@ -260,9 +362,9 @@ def list_photos(album_id: str = None):
     """List all photos, optionally filtered by album_id"""
     db = get_db()
     if album_id:
-        rows = db.execute("SELECT * FROM photos WHERE album_id=? ORDER BY created_at DESC", (album_id,)).fetchall()
+        rows = db.execute("SELECT * FROM photos WHERE album_id=? ORDER BY sort_order ASC, created_at DESC", (album_id,)).fetchall()
     else:
-        rows = db.execute("SELECT * FROM photos ORDER BY created_at DESC").fetchall()
+        rows = db.execute("SELECT * FROM photos ORDER BY sort_order ASC, created_at DESC").fetchall()
     db.close()
 
     photos = []
@@ -271,6 +373,11 @@ def list_photos(album_id: str = None):
         path = VAULT_DIR / photo["filename"]
         if path.exists():
             photo["url"] = f"/api/vault/photo/{photo['filename']}"
+            thumb = photo.get("thumbnail_filename")
+            if thumb:
+                photo["thumbnail_url"] = f"/api/vault/photo/{thumb}"
+            else:
+                photo["thumbnail_url"] = photo["url"]
             photo["size"] = path.stat().st_size
             photos.append(photo)
     return photos
@@ -278,34 +385,68 @@ def list_photos(album_id: str = None):
 @app.post("/api/vault/upload")
 async def upload_photo(file: UploadFile = File(...), album_id: str = None):
     ext = Path(file.filename).suffix.lower()
-    if ext not in [".jpg", ".jpeg", ".png", ".webp"]:
+    is_video = ext in [".mp4", ".mov", ".mkv"]
+    if ext not in [".jpg", ".jpeg", ".png", ".webp"] and not is_video:
         raise HTTPException(400, "Format non supporté")
+        
     photo_id = str(uuid.uuid4())
     filename = f"{photo_id}{ext}"
     dest = VAULT_DIR / filename
+    
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
+
+    media_type = 'video' if is_video else 'image'
+    thumbnail_filename = None
+    phash_val = None
+
+    # SPACE SAVER & PHASH : Générer la miniature et l'empreinte si c'est une image
+    if not is_video:
+        try:
+            img = Image.open(dest)
+            
+            phash_val = compute_phash(dest)
+
+            # Génération de la miniature (Thumbnail)
+            img.thumbnail((500, 500)) # Redimensionne en gardant les proportions
+            thumbnail_filename = f"thumb_{photo_id}.webp"
+            thumb_dest = VAULT_DIR / thumbnail_filename
+            img.save(thumb_dest, format="WEBP", quality=80)
+        except Exception as e:
+            print(f"Erreur traitement image: {e}")
 
     # Save to DB
     db = get_db()
     now = datetime.utcnow().isoformat()
-    db.execute("INSERT INTO photos VALUES(?,?,?,?)", (photo_id, album_id, filename, now))
+    db.execute("""
+        INSERT INTO photos (id, album_id, filename, thumbnail_filename, media_type, phash, created_at) 
+        VALUES(?,?,?,?,?,?,?)
+    """, (photo_id, album_id, filename, thumbnail_filename, media_type, phash_val, now))
     db.commit()
 
     # Update album cover if this is the first photo
     if album_id:
         count = db.execute("SELECT COUNT(*) as cnt FROM photos WHERE album_id=?", (album_id,)).fetchone()["cnt"]
-        if count == 1:  # First photo
+        if count == 1:
             db.execute("UPDATE albums SET cover_url=? WHERE id=?", (f"/api/vault/photo/{filename}", album_id))
             db.commit()
+
+    duplicate_of = None
+    if phash_val:
+        dup = is_duplicate(phash_val)
+        if dup:
+            duplicate_of = dup["id"]
 
     db.close()
     return {
         "id": photo_id,
         "filename": filename,
         "url": f"/api/vault/photo/{filename}",
+        "thumbnail_url": f"/api/vault/photo/{thumbnail_filename}" if thumbnail_filename else f"/api/vault/photo/{filename}",
         "album_id": album_id,
-        "created_at": now
+        "media_type": media_type,
+        "created_at": now,
+        "duplicate_of": duplicate_of
     }
 
 @app.get("/api/vault/photo/{filename}")

@@ -1,5 +1,8 @@
 package com.toutieserver.toutienote.ui.screens
 
+import android.net.Uri
+import android.widget.MediaController
+import android.widget.VideoView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -23,7 +26,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
+import coil.request.ImageRequest
 import com.toutieserver.toutienote.data.api.ApiService
 import com.toutieserver.toutienote.data.models.Photo
 import com.toutieserver.toutienote.ui.theme.*
@@ -69,25 +75,48 @@ fun PhotoFullscreenScreen(
     ) {
         HorizontalPager(
             state = pagerState,
+            key = { page -> photos.getOrNull(page)?.url ?: page },
             modifier = Modifier.fillMaxSize()
         ) { page ->
             val photo = photos.getOrNull(page) ?: return@HorizontalPager
+            val isVideo = photo.mediaType.startsWith("video")
 
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) { showOverlay = !showOverlay },
-                contentAlignment = Alignment.Center
-            ) {
-                AsyncImage(
-                    model = ApiService.photoUrl(photo.url) + "?t=${photo.url.hashCode()}",
-                    contentDescription = photo.filename,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize()
-                )
+            key(photo.url) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { showOverlay = !showOverlay },
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (isVideo) {
+                        val videoUrl = ApiService.photoUrl(photo.url)
+                        AndroidView(
+                            factory = { ctx ->
+                                VideoView(ctx).apply {
+                                    setVideoURI(Uri.parse(videoUrl))
+                                    val mc = MediaController(ctx)
+                                    mc.setAnchorView(this)
+                                    setMediaController(mc)
+                                    setOnPreparedListener { it.isLooping = true; start() }
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        AsyncImage(
+                            model = ImageRequest.Builder(LocalContext.current)
+                                .data(ApiService.photoUrl(photo.url))
+                                .memoryCachePolicy(CachePolicy.DISABLED)
+                                .build(),
+                            contentDescription = photo.filename,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
             }
         }
 

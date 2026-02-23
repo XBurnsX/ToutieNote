@@ -1,10 +1,12 @@
 package com.toutieserver.toutienote.ui.screens
 
 import android.Manifest
+import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -29,12 +31,14 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.toutieserver.toutienote.data.models.Album
 import com.toutieserver.toutienote.data.models.Photo
 import com.toutieserver.toutienote.ui.components.PhotoCard
 import com.toutieserver.toutienote.ui.theme.*
 import com.toutieserver.toutienote.viewmodels.VaultViewModel
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -108,25 +112,75 @@ fun AlbumPhotosScreen(
         error?.let { snackbarHostState.showSnackbar(it); vm.clearError() }
     }
 
-    val photoPickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetMultipleContents()
+    // Photo/Video picker (images + videos)
+    val mediaPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia()
     ) { uris ->
         if (uris.isNotEmpty()) {
             vm.uploadPhotosToAlbum(uris, album.id, context.contentResolver, context.cacheDir)
         }
     }
 
-    val permLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) photoPickerLauncher.launch("image/*")
+    fun pickPhotos() {
+        mediaPickerLauncher.launch(
+            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+        )
     }
 
-    fun pickPhotos() {
-        val perm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
-            Manifest.permission.READ_MEDIA_IMAGES
-        else Manifest.permission.READ_EXTERNAL_STORAGE
-        permLauncher.launch(perm)
+    // Camera capture (never in camera roll)
+    var cameraUri by remember { mutableStateOf<Uri?>(null) }
+
+    val cameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicture()
+    ) { success ->
+        if (success && cameraUri != null) {
+            vm.uploadPhotosToAlbum(listOf(cameraUri!!), album.id, context.contentResolver, context.cacheDir)
+        }
+    }
+
+    val cameraPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            val file = File(context.cacheDir, "capture_${System.currentTimeMillis()}.jpg")
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+            cameraUri = uri
+            cameraLauncher.launch(uri)
+        }
+    }
+
+    fun takePhoto() {
+        cameraPermLauncher.launch(Manifest.permission.CAMERA)
+    }
+
+    // Duplicate detection warning
+    val dupeCount by vm.duplicateCount.collectAsState()
+    var showDupeDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(dupeCount) {
+        if (dupeCount > 0) showDupeDialog = true
+    }
+
+    if (showDupeDialog && dupeCount > 0) {
+        AlertDialog(
+            onDismissRequest = { showDupeDialog = false; vm.clearDuplicateCount() },
+            containerColor = SurfaceColor,
+            icon = { Icon(Icons.Default.ContentCopy, null, tint = AccentColor, modifier = Modifier.size(32.dp)) },
+            title = { Text("Doublons détectés", fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text(
+                    "$dupeCount fichier(s) similaire(s) déjà dans le vault. Ils ont été importés quand même.",
+                    color = MutedColor,
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = { showDupeDialog = false; vm.clearDuplicateCount() },
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentColor)
+                ) { Text("OK") }
+            }
+        )
     }
 
     showDeleteDialog?.let { photo ->
@@ -209,8 +263,11 @@ fun AlbumPhotosScreen(
                             Icon(Icons.Default.Slideshow, "Slideshow", tint = AccentColor)
                         }
                     }
+                    IconButton(onClick = ::takePhoto) {
+                        Icon(Icons.Default.CameraAlt, "Photo", tint = AccentColor)
+                    }
                     IconButton(onClick = ::pickPhotos) {
-                        Icon(Icons.Default.AddPhotoAlternate, "Ajouter", tint = AccentColor)
+                        Icon(Icons.Default.AddPhotoAlternate, "Importer", tint = AccentColor)
                     }
                 }
             )
@@ -239,15 +296,27 @@ fun AlbumPhotosScreen(
                     Spacer(Modifier.height(8.dp))
                     Text("Ajoutez des photos pour commencer", color = MutedColor, fontSize = 14.sp)
                     Spacer(Modifier.height(24.dp))
-                    Button(
-                        onClick = ::pickPhotos,
-                        colors = ButtonDefaults.buttonColors(containerColor = AccentColor),
-                        shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp)
-                    ) {
-                        Icon(Icons.Default.AddPhotoAlternate, null, modifier = Modifier.size(20.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Ajouter des photos", fontSize = 15.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(
+                            onClick = ::takePhoto,
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentColor),
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp)
+                        ) {
+                            Icon(Icons.Default.CameraAlt, null, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Photo", fontSize = 15.sp)
+                        }
+                        Button(
+                            onClick = ::pickPhotos,
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentColor),
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp)
+                        ) {
+                            Icon(Icons.Default.AddPhotoAlternate, null, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Importer", fontSize = 15.sp)
+                        }
                     }
                 }
                 else -> {

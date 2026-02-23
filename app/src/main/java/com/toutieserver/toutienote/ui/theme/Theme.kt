@@ -9,12 +9,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 private val DarkColorScheme = darkColorScheme(
-    primary        = AccentColor,
-    background     = BgColor,
-    surface        = SurfaceColor,
-    onBackground   = TextColor,
-    onSurface      = TextColor,
-    error          = DangerColor,
+    primary          = AccentColor,
+    background       = BgColor,
+    surface          = SurfaceColor,
+    onBackground     = TextColor,
+    onSurface        = TextColor,
+    error            = DangerColor,
+    inverseSurface   = Surface2Color,
+    inverseOnSurface = TextColor,
 )
 
 val AppTypography = Typography(

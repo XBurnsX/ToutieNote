@@ -29,6 +29,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.toutieserver.toutienote.data.api.ApiService
 import com.toutieserver.toutienote.data.models.Album
+import com.toutieserver.toutienote.ui.components.PinDialog
+import com.toutieserver.toutienote.ui.components.PinMode
 import com.toutieserver.toutienote.ui.theme.*
 import com.toutieserver.toutienote.viewmodels.VaultViewModel
 
@@ -48,6 +50,8 @@ fun AlbumsListScreen(
     var showOptionsSheet by remember { mutableStateOf<Album?>(null) }
     var showDeleteDialog by remember { mutableStateOf<Album?>(null) }
     var showRenameDialog by remember { mutableStateOf<Album?>(null) }
+    var showLockDialog by remember { mutableStateOf<Album?>(null) }
+    var showUnlockDialog by remember { mutableStateOf<Album?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) { vm.loadAlbums() }
@@ -176,6 +180,33 @@ fun AlbumsListScreen(
         )
     }
 
+    // Lock dialog (set PIN for album)
+    showLockDialog?.let { album ->
+        PinDialog(
+            mode = PinMode.SETUP,
+            onSuccess = { showLockDialog = null },
+            onDismiss = { showLockDialog = null },
+            onVerify = { _, _, _ -> },
+            onSetup = { pin, ok ->
+                vm.lockAlbum(album.id, pin)
+                ok()
+            },
+        )
+    }
+
+    // Unlock dialog (verify PIN to remove lock)
+    showUnlockDialog?.let { album ->
+        PinDialog(
+            mode = PinMode.VERIFY,
+            onSuccess = { showUnlockDialog = null },
+            onDismiss = { showUnlockDialog = null },
+            onVerify = { pin, ok, fail ->
+                vm.unlockAlbum(album.id, pin, ok, fail)
+            },
+            onSetup = { _, _ -> },
+        )
+    }
+
     // Options bottom sheet
     showOptionsSheet?.let { album ->
         ModalBottomSheet(
@@ -226,14 +257,48 @@ fun AlbumsListScreen(
                     }
                 }
 
-                Divider(color = BorderColor, modifier = Modifier.padding(vertical = 8.dp))
+                HorizontalDivider(color = BorderColor, modifier = Modifier.padding(vertical = 8.dp))
 
-                // Options
                 OptionItem(
                     icon = Icons.Default.Edit,
                     text = "Renommer",
                     onClick = {
                         showRenameDialog = album
+                        showOptionsSheet = null
+                    }
+                )
+                if (album.isLocked) {
+                    OptionItem(
+                        icon = Icons.Default.LockOpen,
+                        text = "Retirer le verrou",
+                        onClick = {
+                            showUnlockDialog = album
+                            showOptionsSheet = null
+                        }
+                    )
+                } else {
+                    OptionItem(
+                        icon = Icons.Default.Lock,
+                        text = "Verrouiller avec PIN",
+                        onClick = {
+                            showLockDialog = album
+                            showOptionsSheet = null
+                        }
+                    )
+                }
+                OptionItem(
+                    icon = Icons.Default.ArrowUpward,
+                    text = "Monter",
+                    onClick = {
+                        vm.moveAlbum(album.id, -1)
+                        showOptionsSheet = null
+                    }
+                )
+                OptionItem(
+                    icon = Icons.Default.ArrowDownward,
+                    text = "Descendre",
+                    onClick = {
+                        vm.moveAlbum(album.id, 1)
                         showOptionsSheet = null
                     }
                 )
@@ -425,6 +490,24 @@ private fun AlbumCard(
                             fontWeight = FontWeight.SemiBold,
                             color = androidx.compose.ui.graphics.Color.White,
                             fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+
+                // Lock badge
+                if (album.isLocked) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        color = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.7f)
+                    ) {
+                        Icon(
+                            Icons.Default.Lock,
+                            contentDescription = "Verrouillé",
+                            tint = AccentColor,
+                            modifier = Modifier.padding(6.dp).size(16.dp)
                         )
                     }
                 }
