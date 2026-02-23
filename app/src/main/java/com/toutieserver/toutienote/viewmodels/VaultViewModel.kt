@@ -1,7 +1,11 @@
 package com.toutieserver.toutienote.viewmodels
 
 import android.content.ContentResolver
+import android.content.ContentValues
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.toutieserver.toutienote.data.api.ApiService
@@ -37,6 +41,7 @@ class VaultViewModel : ViewModel() {
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
 
+    // ── PIN ────────────────────────────────────────────────────
     fun checkPin() {
         viewModelScope.launch(Dispatchers.IO) {
             try { _pinExists.value = ApiService.pinExists() }
@@ -48,7 +53,8 @@ class VaultViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 ApiService.setupPin(pin)
-                viewModelScope.launch(Dispatchers.Main) { onSuccess() }
+                _pinExists.value = true
+                kotlinx.coroutines.withContext(Dispatchers.Main) { onSuccess() }
             } catch (e: Exception) { _error.value = "Erreur setup PIN: ${e.message}" }
         }
     }
@@ -56,7 +62,7 @@ class VaultViewModel : ViewModel() {
     fun verifyPin(pin: String, onSuccess: () -> Unit, onFail: () -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
             val ok = ApiService.verifyPin(pin)
-            viewModelScope.launch(Dispatchers.Main) {
+            kotlinx.coroutines.withContext(Dispatchers.Main) {
                 if (ok) onSuccess() else onFail()
             }
         }
@@ -75,8 +81,8 @@ class VaultViewModel : ViewModel() {
     fun createAlbum(name: String) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                ApiService.createAlbum(name)
-                loadAlbums()
+                val album = ApiService.createAlbum(name)
+                _albums.value = listOf(album) + _albums.value
                 _message.value = "Album créé ✓"
             } catch (e: Exception) { _error.value = "Erreur création: ${e.message}" }
         }
@@ -104,6 +110,18 @@ class VaultViewModel : ViewModel() {
         }
     }
 
+    fun setAlbumCover(albumId: String, photoUrl: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                ApiService.setAlbumCover(albumId, photoUrl)
+                _albums.value = _albums.value.map {
+                    if (it.id == albumId) it.copy(coverUrl = photoUrl) else it
+                }
+                _message.value = "Cover mise à jour ✓"
+            } catch (e: Exception) { _error.value = "Erreur cover: ${e.message}" }
+        }
+    }
+
     // ── Photos ─────────────────────────────────────────────────
     fun loadPhotos() {
         viewModelScope.launch(Dispatchers.IO) {
@@ -123,11 +141,10 @@ class VaultViewModel : ViewModel() {
         }
     }
 
-    fun uploadPhotos(uris: List<Uri>, contentResolver: ContentResolver, cacheDir: File, onDeleteFromGallery: ((List<Uri>) -> Unit)? = null) {
+    fun uploadPhotos(uris: List<Uri>, contentResolver: ContentResolver, cacheDir: File) {
         viewModelScope.launch(Dispatchers.IO) {
             _uploading.value = true
             var uploaded = 0
-            val uploadedUris = mutableListOf<Uri>()
             for (uri in uris) {
                 try {
                     val filename = "vault_${System.currentTimeMillis()}.jpg"
@@ -136,8 +153,8 @@ class VaultViewModel : ViewModel() {
                         FileOutputStream(tempFile).use { output -> input.copyTo(output) }
                     }
                     ApiService.uploadPhoto(tempFile, filename, null)
+                    deleteFromGallery(contentResolver, uri)
                     tempFile.delete()
-                    uploadedUris.add(uri)
                     uploaded++
                 } catch (e: Exception) {
                     _error.value = "Erreur upload: ${e.message}"
@@ -146,19 +163,13 @@ class VaultViewModel : ViewModel() {
             _uploading.value = false
             if (uploaded > 0) _message.value = "$uploaded photo(s) ajoutée(s) ✓"
             loadPhotos()
-            if (uploadedUris.isNotEmpty()) {
-                viewModelScope.launch(Dispatchers.Main) {
-                    onDeleteFromGallery?.invoke(uploadedUris)
-                }
-            }
         }
     }
 
-    fun uploadPhotosToAlbum(uris: List<Uri>, albumId: String, contentResolver: ContentResolver, cacheDir: File, onDeleteFromGallery: ((List<Uri>) -> Unit)? = null) {
+    fun uploadPhotosToAlbum(uris: List<Uri>, albumId: String, contentResolver: ContentResolver, cacheDir: File) {
         viewModelScope.launch(Dispatchers.IO) {
             _uploading.value = true
             var uploaded = 0
-            val uploadedUris = mutableListOf<Uri>()
             for (uri in uris) {
                 try {
                     val filename = "vault_${System.currentTimeMillis()}.jpg"
@@ -167,8 +178,8 @@ class VaultViewModel : ViewModel() {
                         FileOutputStream(tempFile).use { output -> input.copyTo(output) }
                     }
                     ApiService.uploadPhoto(tempFile, filename, albumId)
+                    deleteFromGallery(contentResolver, uri)
                     tempFile.delete()
-                    uploadedUris.add(uri)
                     uploaded++
                 } catch (e: Exception) {
                     _error.value = "Erreur upload: ${e.message}"
@@ -177,33 +188,127 @@ class VaultViewModel : ViewModel() {
             _uploading.value = false
             if (uploaded > 0) _message.value = "$uploaded photo(s) ajoutée(s) ✓"
             loadPhotosForAlbum(albumId)
-            if (uploadedUris.isNotEmpty()) {
-                viewModelScope.launch(Dispatchers.Main) {
-                    onDeleteFromGallery?.invoke(uploadedUris)
+        }
+    }
+
+    private fun deleteFromGallery(contentResolver: ContentResolver, uri: Uri) {
+        try {
+            val deleted = contentResolver.delete(uri, null, null)
+            if (deleted > 0) return
+
+            val projection = arrayOf(MediaStore.Images.Media.DATA)
+            contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val pathIndex = cursor.getColumnIndex(MediaStore.Images.Media.DATA)
+                    if (pathIndex >= 0) {
+                        val filePath = cursor.getString(pathIndex)
+                        if (filePath != null) {
+                            val file = File(filePath)
+                            if (file.exists()) {
+                                file.delete()
+                                contentResolver.delete(
+                                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                                    "${MediaStore.Images.Media.DATA}=?",
+                                    arrayOf(filePath)
+                                )
+                            }
+                        }
+                    }
                 }
+            }
+        } catch (_: Exception) { }
+    }
+
+    // ── Export vers la galerie ──────────────────────────────────
+    fun exportToGallery(photo: Photo, contentResolver: ContentResolver) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                _message.value = "Export en cours..."
+                val bytes = ApiService.downloadPhotoBytes(photo.url)
+
+                val ext = photo.filename.substringAfterLast('.', "jpg")
+                val mimeType = when (ext.lowercase()) {
+                    "png" -> "image/png"
+                    "webp" -> "image/webp"
+                    else -> "image/jpeg"
+                }
+                val displayName = "ToutieNote_${System.currentTimeMillis()}.$ext"
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val values = ContentValues().apply {
+                        put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
+                        put(MediaStore.Images.Media.MIME_TYPE, mimeType)
+                        put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/ToutieNote")
+                        put(MediaStore.Images.Media.IS_PENDING, 1)
+                    }
+                    val insertUri = contentResolver.insert(
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
+                    ) ?: throw Exception("Impossible de créer l'entrée MediaStore")
+
+                    contentResolver.openOutputStream(insertUri)?.use { out ->
+                        out.write(bytes)
+                    }
+
+                    values.clear()
+                    values.put(MediaStore.Images.Media.IS_PENDING, 0)
+                    contentResolver.update(insertUri, values, null, null)
+                } else {
+                    val dir = Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_PICTURES + "/ToutieNote"
+                    )
+                    dir.mkdirs()
+                    val file = File(dir, displayName)
+                    FileOutputStream(file).use { it.write(bytes) }
+
+                    val values = ContentValues().apply {
+                        put(MediaStore.Images.Media.DATA, file.absolutePath)
+                        put(MediaStore.Images.Media.MIME_TYPE, mimeType)
+                    }
+                    contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                }
+
+                _message.value = "Photo exportée dans la galerie ✓"
+            } catch (e: Exception) {
+                _error.value = "Erreur export: ${e.message}"
             }
         }
     }
 
-    /** Upload le crop, met à jour les listes, appelle onSuccess(newPhoto, file, newFilename). Ne supprime pas le file : l’UI l’utilise pour afficher l’image tout de suite. */
+    // ── Crop: REMPLACE le fichier, garde la même position ──────
     fun uploadCroppedPhoto(file: File, originalFilename: String, albumId: String? = null, onSuccess: ((Photo?, File, String) -> Unit)? = null) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val newFilename = "cropped_${System.currentTimeMillis()}_$originalFilename"
-                ApiService.uploadPhoto(file, newFilename, albumId)
-                ApiService.deletePhoto(originalFilename)
-                _message.value = "Photo rognée ✓"
-                var updated = if (albumId != null) ApiService.getPhotos(albumId) else ApiService.getPhotos()
-                var newPhoto = updated.find { it.filename == newFilename }
-                if (newPhoto == null) {
-                    kotlinx.coroutines.delay(400)
-                    updated = if (albumId != null) ApiService.getPhotos(albumId) else ApiService.getPhotos()
-                    newPhoto = updated.find { it.filename == newFilename }
-                }
-                _photos.value = updated
-                if (albumId != null) _albums.value = ApiService.getAlbums()
-                viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                    onSuccess?.invoke(newPhoto, file, newFilename)
+                // Trouver le photo_id de l'original
+                val originalPhoto = _photos.value.find { it.filename == originalFilename }
+
+                if (originalPhoto != null) {
+                    // REPLACE: même id, même created_at → même position dans la liste
+                    val newFilename = "cropped_${System.currentTimeMillis()}.jpg"
+                    val replacedPhoto = ApiService.replacePhoto(originalPhoto.id, file, newFilename)
+                    _message.value = "Photo rognée ✓"
+
+                    // Mettre à jour la liste locale en remplaçant l'ancienne par la nouvelle
+                    _photos.value = _photos.value.map { p ->
+                        if (p.id == originalPhoto.id) replacedPhoto else p
+                    }
+                    if (albumId != null) _albums.value = ApiService.getAlbums()
+
+                    kotlinx.coroutines.withContext(Dispatchers.Main) {
+                        onSuccess?.invoke(replacedPhoto, file, replacedPhoto.filename)
+                    }
+                } else {
+                    // Fallback: photo pas trouvée localement, upload classique
+                    val newFilename = "cropped_${System.currentTimeMillis()}_$originalFilename"
+                    ApiService.uploadPhoto(file, newFilename, albumId)
+                    ApiService.deletePhoto(originalFilename)
+                    _message.value = "Photo rognée ✓"
+                    val updated = if (albumId != null) ApiService.getPhotos(albumId) else ApiService.getPhotos()
+                    val newPhoto = updated.find { it.filename == newFilename }
+                    _photos.value = updated
+                    if (albumId != null) _albums.value = ApiService.getAlbums()
+                    kotlinx.coroutines.withContext(Dispatchers.Main) {
+                        onSuccess?.invoke(newPhoto, file, newFilename)
+                    }
                 }
             } catch (e: Exception) {
                 _error.value = "Erreur crop: ${e.message}"

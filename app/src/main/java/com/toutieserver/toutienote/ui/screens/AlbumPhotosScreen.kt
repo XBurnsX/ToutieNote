@@ -1,18 +1,18 @@
 package com.toutieserver.toutienote.ui.screens
 
 import android.Manifest
-import android.net.Uri
 import android.os.Build
-import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -33,13 +33,34 @@ import com.toutieserver.toutienote.data.models.Photo
 import com.toutieserver.toutienote.ui.components.PhotoCard
 import com.toutieserver.toutienote.ui.theme.*
 import com.toutieserver.toutienote.viewmodels.VaultViewModel
+import java.text.SimpleDateFormat
+import java.util.*
 
-@OptIn(ExperimentalMaterial3Api::class)
+private fun groupPhotosByMonth(photos: List<Photo>): List<Pair<String, List<Photo>>> {
+    val isoParser = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault()).apply {
+        timeZone = TimeZone.getTimeZone("UTC")
+    }
+    val monthFormat = SimpleDateFormat("MMMM yyyy", Locale.FRENCH)
+
+    return photos
+        .sortedByDescending { it.createdAt }
+        .groupBy { photo ->
+            try {
+                val date = isoParser.parse(photo.createdAt.take(19))
+                if (date != null) monthFormat.format(date).replaceFirstChar { it.uppercase() }
+                else "Date inconnue"
+            } catch (_: Exception) { "Date inconnue" }
+        }
+        .toList()
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun AlbumPhotosScreen(
     album: Album,
     vm: VaultViewModel = viewModel(),
     onPhotoClick: (Photo) -> Unit,
+    onSlideshow: (List<Photo>) -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -53,7 +74,14 @@ fun AlbumPhotosScreen(
     var showOptionsSheet by remember { mutableStateOf<Photo?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
 
-    LaunchedEffect(album.id) { vm.loadPhotosForAlbum(album.id) }
+    // Recharger à chaque fois qu'on arrive sur cet écran
+    var refreshKey by remember { mutableIntStateOf(0) }
+    LaunchedEffect(album.id, refreshKey) { vm.loadPhotosForAlbum(album.id) }
+    // Incrémenter au retour (recomposition)
+    DisposableEffect(Unit) {
+        refreshKey++
+        onDispose { }
+    }
 
     LaunchedEffect(message) {
         message?.let { snackbarHostState.showSnackbar(it); vm.clearMessage() }
@@ -62,30 +90,11 @@ fun AlbumPhotosScreen(
         error?.let { snackbarHostState.showSnackbar(it); vm.clearError() }
     }
 
-    val deleteRequestLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartIntentSenderForResult()
-    ) { /* Résultat ignoré, les photos seront supprimées si l'user confirme */ }
-
-    fun deleteFromGallery(uris: List<Uri>) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            try {
-                val pendingIntent = MediaStore.createDeleteRequest(context.contentResolver, uris)
-                deleteRequestLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
-            } catch (_: Exception) {
-                uris.forEach { try { context.contentResolver.delete(it, null, null) } catch (_: Exception) {} }
-            }
-        } else {
-            uris.forEach { try { context.contentResolver.delete(it, null, null) } catch (_: Exception) {} }
-        }
-    }
-
     val photoPickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.GetMultipleContents()
     ) { uris ->
         if (uris.isNotEmpty()) {
-            vm.uploadPhotosToAlbum(uris, album.id, context.contentResolver, context.cacheDir) { uploadedUris ->
-                deleteFromGallery(uploadedUris)
-            }
+            vm.uploadPhotosToAlbum(uris, album.id, context.contentResolver, context.cacheDir)
         }
     }
 
@@ -135,9 +144,17 @@ fun AlbumPhotosScreen(
                     fontWeight = FontWeight.SemiBold,
                     color = TextColor
                 )
-                Divider(color = BorderColor)
+                HorizontalDivider(color = BorderColor)
                 OptionItem(Icons.Default.Visibility, "Voir en plein écran") {
                     onPhotoClick(photo); showOptionsSheet = null
+                }
+                OptionItem(Icons.Default.Image, "Définir comme cover") {
+                    vm.setAlbumCover(album.id, photo.url)
+                    showOptionsSheet = null
+                }
+                OptionItem(Icons.Default.SaveAlt, "Exporter vers la galerie") {
+                    vm.exportToGallery(photo, context.contentResolver)
+                    showOptionsSheet = null
                 }
                 OptionItem(Icons.Default.Delete, "Supprimer", DangerColor, DangerColor) {
                     showDeleteDialog = photo; showOptionsSheet = null
@@ -158,51 +175,51 @@ fun AlbumPhotosScreen(
                 },
                 title = {
                     Column {
-                        Text(album.name.uppercase(), fontFamily = FontFamily.Monospace, fontSize = 13.sp,
-                            color = MutedColor, letterSpacing = 2.sp, maxLines = 1)
-                        AnimatedVisibility(visible = photos.isNotEmpty()) {
-                            Text("${photos.size} photo${if (photos.size > 1) "s" else ""}",
-                                fontSize = 11.sp, color = MutedColor.copy(alpha = 0.7f), fontFamily = FontFamily.Monospace)
-                        }
+                        Text(album.name, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = TextColor)
+                        Text(
+                            "${photos.size} photo${if (photos.size > 1) "s" else ""}",
+                            fontSize = 11.sp,
+                            color = MutedColor,
+                            fontFamily = FontFamily.Monospace
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceColor),
                 actions = {
-                    AnimatedVisibility(visible = uploading) {
-                        CircularProgressIndicator(color = AccentColor, strokeWidth = 2.dp,
-                            modifier = Modifier.size(20.dp).padding(end = 16.dp))
-                    }
-                    AnimatedVisibility(visible = !uploading) {
-                        IconButton(onClick = ::pickPhotos) {
-                            Icon(Icons.Default.AddPhotoAlternate, "Ajouter photos", tint = AccentColor)
+                    if (photos.size >= 2) {
+                        IconButton(onClick = { onSlideshow(photos) }) {
+                            Icon(Icons.Default.Slideshow, "Slideshow", tint = AccentColor)
                         }
+                    }
+                    IconButton(onClick = ::pickPhotos) {
+                        Icon(Icons.Default.AddPhotoAlternate, "Ajouter", tint = AccentColor)
                     }
                 }
             )
-        },
-        floatingActionButton = {
-            AnimatedVisibility(visible = photos.isNotEmpty() && !uploading, enter = fadeIn(), exit = fadeOut()) {
-                FloatingActionButton(
-                    onClick = ::pickPhotos,
-                    containerColor = AccentColor,
-                    contentColor = androidx.compose.ui.graphics.Color.White
-                ) { Icon(Icons.Default.AddPhotoAlternate, "Ajouter photos") }
-            }
         }
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+            AnimatedVisibility(uploading, enter = fadeIn(), exit = fadeOut()) {
+                LinearProgressIndicator(
+                    color = AccentColor,
+                    trackColor = SurfaceColor,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
             when {
-                loading -> CircularProgressIndicator(color = AccentColor, modifier = Modifier.align(Alignment.Center))
+                loading -> CircularProgressIndicator(
+                    color = AccentColor, modifier = Modifier.align(Alignment.Center)
+                )
                 photos.isEmpty() -> Column(
                     modifier = Modifier.align(Alignment.Center).padding(32.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text("🖼️", fontSize = 64.sp)
+                    Text("\uD83D\uDDBC\uFE0F", fontSize = 64.sp)
                     Spacer(Modifier.height(16.dp))
                     Text("Album vide", fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = TextColor)
                     Spacer(Modifier.height(8.dp))
-                    Text("Ajoutez vos premières photos\nà cet album", color = MutedColor, fontSize = 14.sp,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Text("Ajoutez des photos pour commencer", color = MutedColor, fontSize = 14.sp)
                     Spacer(Modifier.height(24.dp))
                     Button(
                         onClick = ::pickPhotos,
@@ -215,15 +232,41 @@ fun AlbumPhotosScreen(
                         Text("Ajouter des photos", fontSize = 15.sp)
                     }
                 }
-                else -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
-                    contentPadding = PaddingValues(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    items(photos, key = { it.id }) { photo ->
-                        PhotoCard(photo, { onPhotoClick(photo) }, { showOptionsSheet = photo })
+                else -> {
+                    val groupedPhotos = remember(photos) { groupPhotosByMonth(photos) }
+
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        groupedPhotos.forEach { (monthLabel, monthPhotos) ->
+                            item(
+                                key = "header_$monthLabel",
+                                span = { GridItemSpan(3) }
+                            ) {
+                                Text(
+                                    text = monthLabel,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(BgColor)
+                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TextColor
+                                )
+                            }
+
+                            items(monthPhotos, key = { it.id }) { photo ->
+                                PhotoCard(
+                                    photo = photo,
+                                    onClick = { onPhotoClick(photo) },
+                                    onLongClick = { showOptionsSheet = photo }
+                                )
+                            }
+                        }
                     }
                 }
             }

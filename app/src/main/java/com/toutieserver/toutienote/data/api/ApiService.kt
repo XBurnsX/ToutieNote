@@ -141,6 +141,13 @@ object ApiService {
         executeForOk(req)
     }
 
+    fun setAlbumCover(albumId: String, photoUrl: String) {
+        val json = JSONObject().put("photo_url", photoUrl).toString()
+        val req = okhttp3.Request.Builder().url("$base/api/vault/albums/$albumId/cover")
+            .put(json.toRequestBody(JSON)).build()
+        executeForOk(req)
+    }
+
     // ── Vault Photos ───────────────────────────────────────────
     fun getPhotos(albumId: String? = null): List<Photo> {
         val url = if (albumId != null) {
@@ -178,6 +185,31 @@ object ApiService {
         executeForOk(req)
     }
 
+    /**
+     * Remplace le fichier d'une photo existante.
+     * Le backend garde le même id, album_id et created_at → la photo ne bouge pas de position.
+     */
+    fun replacePhoto(photoId: String, file: File, filename: String): Photo {
+        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("file", filename, file.asRequestBody("image/*".toMediaType()))
+            .build()
+
+        val req = okhttp3.Request.Builder()
+            .url("$base/api/vault/photo/$photoId/replace")
+            .put(body)
+            .build()
+        val respBody = executeForBody(req)
+        val obj = JSONObject(respBody)
+        return Photo(
+            obj.getString("id"),
+            obj.getString("filename"),
+            obj.getString("url"),
+            0L,
+            obj.optString("created_at"),
+            obj.optString("album_id", null)
+        )
+    }
+
     fun movePhotoToAlbum(photoId: String, albumId: String) {
         val json = JSONObject().put("album_id", albumId).toString()
         val req = okhttp3.Request.Builder().url("$base/api/vault/photo/$photoId/move")
@@ -197,7 +229,14 @@ object ApiService {
         executeForOk(req)
     }
 
-    /** Construit l’URL complète d’une photo (évite double slash ou slash manquant). */
+    fun downloadPhotoBytes(photoUrl: String): ByteArray {
+        val fullUrl = photoUrl(photoUrl)
+        val req = okhttp3.Request.Builder().url(fullUrl).get().build()
+        val response = client.newCall(req).execute()
+        if (!response.isSuccessful) throw java.io.IOException("HTTP ${response.code}")
+        return response.body?.bytes() ?: throw java.io.IOException("Body vide")
+    }
+
     fun photoUrl(url: String): String {
         val path = url.trimStart('/')
         val baseNoSlash = base.trimEnd('/')
