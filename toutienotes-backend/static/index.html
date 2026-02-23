@@ -1,0 +1,1314 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ToutieNote</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap');
+
+:root {
+  --bg:       #0a0a0c;
+  --surface:  #16161a;
+  --surface2: #1e1e24;
+  --border:   #2a2a32;
+  --accent:   #5b8dee;
+  --accent-light: #7ba4f5;
+  --danger:   #e05b5b;
+  --green:    #4ecb8d;
+  --text:     #e8e8f0;
+  --muted:    #6a6a7e;
+  --font:     'Inter', sans-serif;
+  --mono:     'IBM Plex Mono', monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  display: flex;
+  height: 100vh;
+}
+
+/* ══════════ SIDEBAR ══════════ */
+#sidebar {
+  width: 280px;
+  min-width: 280px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+#sidebar-header {
+  padding: 24px 20px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+#sidebar-header h1 {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+#btn-new {
+  background: linear-gradient(135deg, #4a7bd8, #5b8dee, #7ba4f5);
+  border: none;
+  color: #fff;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 1.3rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform .15s, box-shadow .15s;
+  box-shadow: 0 2px 8px rgba(91, 141, 238, 0.3);
+}
+#btn-new:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(91, 141, 238, 0.4); }
+#btn-new:active { transform: scale(0.95); }
+
+#notes-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+#notes-list::-webkit-scrollbar { width: 5px; }
+#notes-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+.note-item {
+  padding: 12px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: all .15s;
+  border: 1px solid transparent;
+  background: transparent;
+}
+.note-item:hover { background: var(--surface2); }
+.note-item.active {
+  background: var(--surface2);
+  border-color: var(--accent);
+  box-shadow: 0 2px 8px rgba(91, 141, 238, 0.15);
+}
+
+.note-item-title {
+  font-size: 0.9rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+.note-item-preview {
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 4px;
+}
+
+#sidebar-footer {
+  padding: 14px 18px;
+  border-top: 1px solid var(--border);
+  position: relative;
+}
+
+#secret-zone {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 50px;
+  height: 50px;
+  cursor: default;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+.sync-status {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+/* ══════════ EDITOR ══════════ */
+#editor-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#editor-toolbar {
+  padding: 16px 28px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--surface);
+}
+
+#note-title-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 1.2rem;
+  font-weight: 600;
+  outline: none;
+}
+#note-title-input::placeholder { color: var(--muted); }
+
+.btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: var(--font);
+  font-size: 0.85rem;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  transition: all .15s;
+}
+.btn-danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.btn-danger:hover {
+  background: var(--danger);
+  color: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(224, 91, 91, 0.3);
+}
+
+#note-content {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 1rem;
+  line-height: 1.8;
+  padding: 28px;
+  resize: none;
+  outline: none;
+}
+#note-content::placeholder { color: var(--muted); }
+
+#empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  gap: 16px;
+}
+#empty-state .big { font-size: 4rem; }
+#empty-state span { font-family: var(--font); font-size: 0.95rem; }
+
+/* ══════════ MODALS ══════════ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .25s;
+}
+.modal-overlay.visible {
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* ══════════ PIN MODAL ══════════ */
+#pin-modal .modal-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 40px;
+  width: 360px;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+
+#pin-modal h2 {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+#pin-modal p {
+  font-size: 0.9rem;
+  color: var(--muted);
+  margin-bottom: 32px;
+}
+
+.pin-dots {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  margin-bottom: 32px;
+}
+.pin-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: transparent;
+  transition: all .2s;
+}
+.pin-dot.filled {
+  background: linear-gradient(135deg, var(--accent), var(--accent-light));
+  border-color: var(--accent);
+  box-shadow: 0 0 16px rgba(91, 141, 238, 0.5);
+}
+.pin-dot.error {
+  background: var(--danger);
+  border-color: var(--danger);
+  animation: shake .3s;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-8px); }
+  75% { transform: translateX(8px); }
+}
+
+.pin-keypad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.pin-key {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 1.2rem;
+  font-weight: 500;
+  padding: 18px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all .15s;
+  user-select: none;
+}
+.pin-key:hover { background: var(--border); transform: translateY(-2px); }
+.pin-key:active { transform: scale(0.95); }
+.pin-key.del { color: var(--danger); }
+.pin-key.empty { background: transparent; border-color: transparent; cursor: default; }
+.pin-key.empty:hover { transform: none; }
+
+#pin-error {
+  color: var(--danger);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  margin-top: 16px;
+  min-height: 20px;
+}
+
+/* ══════════ VAULT MODAL ══════════ */
+#vault-modal {
+  z-index: 101;
+}
+#vault-modal .modal-box {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  width: 92vw;
+  max-width: 1100px;
+  height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 80px rgba(0,0,0,0.6);
+}
+
+#vault-header {
+  padding: 20px 28px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--surface);
+}
+#vault-header h2 {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  font-weight: 600;
+}
+
+.vault-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #4a7bd8, #5b8dee, #7ba4f5);
+  color: #fff;
+  border: none;
+  box-shadow: 0 4px 12px rgba(91, 141, 238, 0.3);
+  font-weight: 500;
+}
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(91, 141, 238, 0.4);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text);
+  font-weight: 500;
+}
+.btn-ghost:hover { background: var(--surface2); }
+
+.btn-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all .15s;
+}
+.btn-icon:hover {
+  background: var(--border);
+  border-color: var(--accent);
+  transform: translateY(-2px);
+}
+
+.btn-icon-danger {
+  height: 40px;
+  padding: 0 16px;
+  border-radius: 10px;
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all .15s;
+  font-family: var(--font);
+  font-size: 0.9rem;
+}
+.btn-icon-danger:hover {
+  background: var(--danger);
+  color: #fff;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(224, 91, 91, 0.3);
+}
+
+#vault-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+#vault-content::-webkit-scrollbar { width: 6px; }
+#vault-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* Albums Grid */
+#albums-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+  margin-bottom: 32px;
+}
+
+.album-card {
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  background: var(--surface);
+  transition: all .2s;
+  position: relative;
+}
+.album-card:hover {
+  transform: translateY(-4px);
+  border-color: var(--accent);
+  box-shadow: 0 12px 32px rgba(91, 141, 238, 0.2);
+}
+
+.album-cover {
+  width: 100%;
+  aspect-ratio: 1;
+  background: var(--surface2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 4rem;
+  position: relative;
+  overflow: hidden;
+}
+.album-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.album-count-badge {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.album-info {
+  padding: 16px;
+}
+.album-name {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.album-meta {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-family: var(--mono);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.album-menu-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(8px);
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity .2s;
+  z-index: 10;
+}
+.album-card:hover .album-menu-btn { opacity: 1; }
+.album-menu-btn:hover { background: rgba(0, 0, 0, 0.9); }
+
+/* Photos Grid */
+#photos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 16px;
+}
+
+.photo-card {
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  position: relative;
+  aspect-ratio: 1;
+  background: var(--surface);
+  transition: all .2s;
+}
+.photo-card:hover {
+  transform: translateY(-4px);
+  border-color: var(--accent);
+  box-shadow: 0 12px 32px rgba(91, 141, 238, 0.2);
+}
+.photo-card.selected {
+  border: 3px solid var(--accent);
+  transform: scale(0.95);
+}
+.photo-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.photo-card-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.75);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  opacity: 0;
+  transition: opacity .2s;
+}
+.photo-card:hover .photo-card-overlay { opacity: 1; }
+
+.photo-checkbox {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+  border: 2px solid var(--border);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  transition: all .2s;
+}
+.photo-checkbox.checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.photo-checkbox.checked::after {
+  content: '✓';
+  color: white;
+  font-size: 16px;
+  font-weight: bold;
+}
+.select-mode .photo-checkbox {
+  display: flex;
+}
+
+.photo-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  transition: transform .15s;
+}
+.photo-btn:active { transform: scale(0.9); }
+.photo-btn-edit { background: var(--accent); }
+.photo-btn-del { background: var(--danger); }
+
+#vault-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--muted);
+  gap: 16px;
+  padding: 60px;
+}
+#vault-empty .big { font-size: 5rem; }
+#vault-empty span { font-size: 1rem; }
+
+#back-to-albums {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  transition: all .15s;
+}
+#back-to-albums:hover { background: var(--border); }
+
+#upload-input { display: none; }
+
+/* Toast */
+#toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%) translateY(30px);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 12px 24px;
+  border-radius: 12px;
+  font-family: var(--font);
+  font-size: 0.9rem;
+  font-weight: 500;
+  opacity: 0;
+  transition: all .3s;
+  z-index: 200;
+  pointer-events: none;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+#toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+  display: inline-block;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<div id="sidebar">
+  <div id="sidebar-header">
+    <h1>Notes</h1>
+    <button id="btn-new" title="Nouvelle note">+</button>
+  </div>
+  <div id="notes-list"></div>
+  <div id="sidebar-footer">
+    <span class="sync-status" id="sync-status">Synced</span>
+    <div id="secret-zone"></div>
+  </div>
+</div>
+
+<!-- EDITOR -->
+<div id="editor-area">
+  <div id="empty-state">
+    <div class="big">📝</div>
+    <span>Sélectionne ou crée une note</span>
+  </div>
+  <div id="editor-wrapper" style="display:none; flex-direction:column; height:100%;">
+    <div id="editor-toolbar">
+      <input id="note-title-input" type="text" placeholder="Titre...">
+      <button id="btn-delete-note" class="btn btn-danger">Supprimer</button>
+    </div>
+    <textarea id="note-content" placeholder="Commence à écrire..."></textarea>
+  </div>
+</div>
+
+<!-- PIN MODAL -->
+<div class="modal-overlay" id="pin-modal">
+  <div class="modal-box">
+    <h2 id="pin-modal-title">Vault</h2>
+    <p id="pin-modal-subtitle">Entre ton PIN</p>
+    <div class="pin-dots">
+      <div class="pin-dot" id="dot-0"></div>
+      <div class="pin-dot" id="dot-1"></div>
+      <div class="pin-dot" id="dot-2"></div>
+      <div class="pin-dot" id="dot-3"></div>
+    </div>
+    <div class="pin-keypad">
+      <button class="pin-key" data-val="1">1</button>
+      <button class="pin-key" data-val="2">2</button>
+      <button class="pin-key" data-val="3">3</button>
+      <button class="pin-key" data-val="4">4</button>
+      <button class="pin-key" data-val="5">5</button>
+      <button class="pin-key" data-val="6">6</button>
+      <button class="pin-key" data-val="7">7</button>
+      <button class="pin-key" data-val="8">8</button>
+      <button class="pin-key" data-val="9">9</button>
+      <button class="pin-key empty" disabled></button>
+      <button class="pin-key" data-val="0">0</button>
+      <button class="pin-key del" id="pin-del">⌫</button>
+    </div>
+    <div id="pin-error"></div>
+  </div>
+</div>
+
+<!-- VAULT MODAL -->
+<div class="modal-overlay" id="vault-modal">
+  <div class="modal-box">
+    <div id="vault-header">
+      <div style="display:flex; align-items:center; gap:16px;">
+        <button id="back-to-albums">← Albums</button>
+        <h2 id="vault-title">🔒 Vault - Albums</h2>
+      </div>
+      <div class="vault-actions">
+        <button class="btn btn-primary" id="btn-new-album" style="display:inline-block;">+ Nouvel Album</button>
+        <button class="btn-icon" id="btn-select-mode" style="display:none;" title="Sélection multiple">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="9 11 12 14 22 4"></polyline>
+            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+          </svg>
+        </button>
+        <button class="btn-icon-danger" id="btn-delete-selected" style="display:none;" title="Supprimer la sélection">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+          </svg>
+          <span id="selected-count" style="margin-left:6px; font-weight:600;">0</span>
+        </button>
+        <button class="btn-icon" id="btn-cancel-select" style="display:none;" title="Annuler">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+        <label for="upload-input" class="btn btn-primary" id="btn-upload" style="cursor:pointer; display:none;">+ Upload</label>
+        <input type="file" id="upload-input" accept="image/*" multiple>
+        <button class="btn btn-ghost" id="btn-vault-close">✕ Fermer</button>
+      </div>
+    </div>
+    <div id="vault-content">
+      <div id="albums-grid"></div>
+      <div id="photos-grid"></div>
+      <div id="vault-empty" style="display:none;">
+        <div class="big">📁</div>
+        <span>Aucun album</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- FULLSCREEN PHOTO MODAL -->
+<div class="modal-overlay" id="fullscreen-modal" style="z-index:102;">
+  <div style="position:relative; width:100%; height:100%; display:flex; align-items:center; justify-content:center;">
+    <img id="fullscreen-img" style="max-width:90%; max-height:90%; object-fit:contain;">
+    <button id="close-fullscreen" style="position:absolute; top:24px; right:24px; width:48px; height:48px; border-radius:50%; background:rgba(0,0,0,0.8); backdrop-filter:blur(8px); border:1px solid var(--border); color:#fff; font-size:1.5rem; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:all .15s;">✕</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const API = '';
+let notes = [];
+let activeNote = null;
+let saveTimer = null;
+let currentAlbum = null;
+let tapCount = 0, tapTimer = null;
+let pinBuffer = '', pinConfirmBuffer = '', pinStep = 'enter';
+
+function toast(msg, duration=2500) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), duration);
+}
+
+async function api(method, path, body=null, isFormData=false) {
+  const opts = { method, headers: {} };
+  if (body && !isFormData) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  } else if (body) {
+    opts.body = body;
+  }
+  const r = await fetch(API + path, opts);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// NOTES
+async function loadNotes() {
+  notes = await api('GET', '/api/notes');
+  renderNotesList();
+}
+
+function renderNotesList() {
+  const list = document.getElementById('notes-list');
+  list.innerHTML = '';
+  if (!notes.length) {
+    list.innerHTML = '<div style="padding:20px;color:var(--muted);font-size:0.85rem;">Aucune note</div>';
+    return;
+  }
+  notes.forEach(n => {
+    const el = document.createElement('div');
+    el.className = 'note-item' + (activeNote?.id === n.id ? ' active' : '');
+    el.innerHTML = `
+      <div class="note-item-title">${n.title || 'Sans titre'}</div>
+      <div class="note-item-preview">${n.content?.slice(0, 50) || '...'}</div>
+    `;
+    el.addEventListener('click', () => openNote(n));
+    list.appendChild(el);
+  });
+}
+
+function openNote(note) {
+  activeNote = note;
+  document.getElementById('empty-state').style.display = 'none';
+  const wrapper = document.getElementById('editor-wrapper');
+  wrapper.style.display = 'flex';
+  document.getElementById('note-title-input').value = note.title || '';
+  document.getElementById('note-content').value = note.content || '';
+  renderNotesList();
+}
+
+async function createNote() {
+  const n = await api('POST', '/api/notes', { title: 'Nouvelle note', content: '' });
+  notes.unshift(n);
+  renderNotesList();
+  openNote(n);
+}
+
+function scheduleSync() {
+  clearTimeout(saveTimer);
+  document.getElementById('sync-status').textContent = 'Sync...';
+  saveTimer = setTimeout(saveActiveNote, 1200);
+}
+
+async function saveActiveNote() {
+  if (!activeNote) return;
+  const title = document.getElementById('note-title-input').value;
+  const content = document.getElementById('note-content').value;
+  try {
+    await api('PUT', `/api/notes/${activeNote.id}`, { title, content });
+    activeNote.title = title;
+    activeNote.content = content;
+    document.getElementById('sync-status').textContent = 'Synced';
+    renderNotesList();
+  } catch(e) {
+    document.getElementById('sync-status').textContent = 'Erreur';
+  }
+}
+
+async function deleteActiveNote() {
+  if (!activeNote || !confirm('Supprimer cette note?')) return;
+  await api('DELETE', `/api/notes/${activeNote.id}`);
+  notes = notes.filter(n => n.id !== activeNote.id);
+  activeNote = null;
+  document.getElementById('editor-wrapper').style.display = 'none';
+  document.getElementById('empty-state').style.display = 'flex';
+  renderNotesList();
+}
+
+document.getElementById('btn-new').addEventListener('click', createNote);
+document.getElementById('btn-delete-note').addEventListener('click', deleteActiveNote);
+document.getElementById('note-title-input').addEventListener('input', scheduleSync);
+document.getElementById('note-content').addEventListener('input', scheduleSync);
+
+// SECRET ZONE
+document.getElementById('secret-zone').addEventListener('click', () => {
+  tapCount++;
+  clearTimeout(tapTimer);
+  tapTimer = setTimeout(() => tapCount = 0, 1800);
+  if (tapCount >= 5) {
+    tapCount = 0;
+    openPinModal();
+  }
+});
+
+// PIN
+async function openPinModal() {
+  pinBuffer = '';
+  pinConfirmBuffer = '';
+  updateDots([]);
+  document.getElementById('pin-error').textContent = '';
+  try {
+    const r = await api('GET', '/api/vault/pin-exists');
+    if (r.exists) {
+      pinStep = 'enter';
+      document.getElementById('pin-modal-title').textContent = 'Vault';
+      document.getElementById('pin-modal-subtitle').textContent = 'Entre ton PIN';
+    } else {
+      pinStep = 'setup-first';
+      document.getElementById('pin-modal-title').textContent = 'Nouveau PIN';
+      document.getElementById('pin-modal-subtitle').textContent = 'Crée ton PIN (4 chiffres)';
+    }
+  } catch(e) { return; }
+  document.getElementById('pin-modal').classList.add('visible');
+}
+
+function closePinModal() {
+  document.getElementById('pin-modal').classList.remove('visible');
+  pinBuffer = '';
+}
+
+function updateDots(filled, error=false) {
+  for (let i = 0; i < 4; i++) {
+    const d = document.getElementById(`dot-${i}`);
+    d.classList.toggle('filled', i < filled.length && !error);
+    d.classList.toggle('error', error);
+  }
+}
+
+async function handlePinInput(val) {
+  if (pinBuffer.length >= 4) return;
+  pinBuffer += val;
+  updateDots(pinBuffer);
+  if (pinBuffer.length < 4) return;
+
+  if (pinStep === 'enter') {
+    try {
+      await api('POST', '/api/vault/verify', { pin: pinBuffer });
+      closePinModal();
+      openVault();
+    } catch(e) {
+      updateDots(pinBuffer, true);
+      document.getElementById('pin-error').textContent = 'PIN incorrect';
+      setTimeout(() => {
+        pinBuffer = '';
+        updateDots([]);
+        document.getElementById('pin-error').textContent = '';
+      }, 900);
+    }
+  } else if (pinStep === 'setup-first') {
+    pinConfirmBuffer = pinBuffer;
+    pinBuffer = '';
+    pinStep = 'setup-confirm';
+    document.getElementById('pin-modal-subtitle').textContent = 'Confirme ton PIN';
+    updateDots([]);
+  } else if (pinStep === 'setup-confirm') {
+    if (pinBuffer === pinConfirmBuffer) {
+      await api('POST', '/api/vault/pin-setup', { pin: pinBuffer });
+      closePinModal();
+      openVault();
+    } else {
+      updateDots(pinBuffer, true);
+      document.getElementById('pin-error').textContent = 'PINs différents';
+      setTimeout(() => {
+        pinBuffer = '';
+        pinConfirmBuffer = '';
+        pinStep = 'setup-first';
+        document.getElementById('pin-modal-subtitle').textContent = 'Crée ton PIN (4 chiffres)';
+        updateDots([]);
+        document.getElementById('pin-error').textContent = '';
+      }, 900);
+    }
+  }
+}
+
+document.querySelectorAll('.pin-key[data-val]').forEach(btn => {
+  btn.addEventListener('click', () => handlePinInput(btn.dataset.val));
+});
+document.getElementById('pin-del').addEventListener('click', () => {
+  if (pinBuffer.length > 0) {
+    pinBuffer = pinBuffer.slice(0, -1);
+    updateDots(pinBuffer);
+  }
+});
+document.getElementById('pin-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closePinModal();
+});
+document.addEventListener('keydown', e => {
+  const pinVisible = document.getElementById('pin-modal').classList.contains('visible');
+  if (!pinVisible) return;
+  if (e.key >= '0' && e.key <= '9') handlePinInput(e.key);
+  if (e.key === 'Backspace' && pinBuffer.length > 0) {
+    pinBuffer = pinBuffer.slice(0, -1);
+    updateDots(pinBuffer);
+  }
+  if (e.key === 'Escape') closePinModal();
+});
+
+// VAULT
+async function openVault() {
+  currentAlbum = null;
+  document.getElementById('vault-modal').classList.add('visible');
+  await loadAlbums();
+}
+
+function closeVault() {
+  document.getElementById('vault-modal').classList.remove('visible');
+  currentAlbum = null;
+}
+
+async function loadAlbums() {
+  const grid = document.getElementById('albums-grid');
+  const photosGrid = document.getElementById('photos-grid');
+  const empty = document.getElementById('vault-empty');
+  const backBtn = document.getElementById('back-to-albums');
+  const uploadBtn = document.getElementById('btn-upload');
+  const newAlbumBtn = document.getElementById('btn-new-album');
+
+  backBtn.style.display = 'none';
+  photosGrid.innerHTML = '';
+  uploadBtn.style.display = 'none';
+  newAlbumBtn.style.display = 'inline-block';
+  document.getElementById('vault-title').textContent = '🔒 Vault - Albums';
+
+  grid.innerHTML = '<div class="spinner"></div>';
+  const albums = await api('GET', '/api/vault/albums');
+  grid.innerHTML = '';
+
+  if (!albums.length) {
+    empty.style.display = 'flex';
+    empty.innerHTML = '<div class="big">📁</div><span>Aucun album</span>';
+    return;
+  }
+  empty.style.display = 'none';
+
+  albums.forEach(album => {
+    const card = document.createElement('div');
+    card.className = 'album-card';
+    card.innerHTML = `
+      <div class="album-cover">
+        ${album.cover_url ? `<img src="${album.cover_url}" loading="lazy">` : '📁'}
+        ${album.photo_count > 0 ? `<div class="album-count-badge">${album.photo_count}</div>` : ''}
+      </div>
+      <div class="album-info">
+        <div class="album-name">${album.name}</div>
+        <div class="album-meta">📷 ${album.photo_count} photo${album.photo_count > 1 ? 's' : ''}</div>
+      </div>
+      <button class="album-menu-btn">⋯</button>
+    `;
+
+    card.addEventListener('click', e => {
+      if (!e.target.classList.contains('album-menu-btn')) {
+        openAlbum(album);
+      }
+    });
+
+    card.querySelector('.album-menu-btn').addEventListener('click', e => {
+      e.stopPropagation();
+      showAlbumMenu(album);
+    });
+
+    grid.appendChild(card);
+  });
+}
+
+async function openAlbum(album) {
+  currentAlbum = album;
+  const grid = document.getElementById('albums-grid');
+  const photosGrid = document.getElementById('photos-grid');
+  const empty = document.getElementById('vault-empty');
+  const backBtn = document.getElementById('back-to-albums');
+  const uploadBtn = document.getElementById('btn-upload');
+  const newAlbumBtn = document.getElementById('btn-new-album');
+
+  grid.innerHTML = '';
+  backBtn.style.display = 'flex';
+  uploadBtn.style.display = 'inline-block';
+  newAlbumBtn.style.display = 'none';
+  document.getElementById('vault-title').textContent = `🔒 ${album.name}`;
+
+  photosGrid.innerHTML = '<div class="spinner"></div>';
+  const photos = await api('GET', `/api/vault/photos?album_id=${album.id}`);
+  photosGrid.innerHTML = '';
+
+  if (!photos.length) {
+    empty.style.display = 'flex';
+    empty.innerHTML = '<div class="big">🖼️</div><span>Album vide</span>';
+    return;
+  }
+  empty.style.display = 'none';
+
+  photos.forEach(p => {
+    const card = document.createElement('div');
+    card.className = 'photo-card';
+    card.dataset.filename = p.filename;
+    card.innerHTML = `
+      <img src="${p.url}" loading="lazy" alt="${p.filename}">
+      <div class="photo-checkbox"></div>
+      <div class="photo-card-overlay">
+        <button class="photo-btn photo-btn-del" title="Supprimer">🗑</button>
+      </div>
+    `;
+
+    const checkbox = card.querySelector('.photo-checkbox');
+
+    card.addEventListener('click', e => {
+      if (photosGrid.classList.contains('select-mode')) {
+        togglePhotoSelection(card);
+      } else if (!e.target.classList.contains('photo-btn') && !e.target.closest('.photo-btn')) {
+        openPhotoFullscreen(p);
+      }
+    });
+
+    card.querySelector('.photo-btn-del').addEventListener('click', async e => {
+      e.stopPropagation();
+      if (!confirm('Supprimer cette photo?')) return;
+      await api('DELETE', `/api/vault/photo/${p.filename}`);
+      toast('Photo supprimée');
+      openAlbum(album);
+    });
+    photosGrid.appendChild(card);
+  });
+
+  // Show select button when photos exist
+  document.getElementById('btn-select-mode').style.display = 'inline-block';
+}
+
+function showAlbumMenu(album) {
+  const actions = [
+    { label: 'Renommer', fn: () => renameAlbum(album) },
+    { label: 'Supprimer', fn: () => deleteAlbum(album), danger: true }
+  ];
+
+  const menu = actions.map(a => `<button class="btn ${a.danger ? 'btn-danger' : 'btn-ghost'}">${a.label}</button>`).join('');
+
+  if (confirm(`Options pour "${album.name}"\n1. Renommer\n2. Supprimer`)) {
+    deleteAlbum(album);
+  } else {
+    const rename = prompt('Nouveau nom:', album.name);
+    if (rename && rename.trim()) {
+      renameAlbum(album, rename.trim());
+    }
+  }
+}
+
+async function renameAlbum(album, newName) {
+  if (!newName) newName = prompt('Nouveau nom:', album.name);
+  if (!newName || !newName.trim()) return;
+  await api('PUT', `/api/vault/albums/${album.id}`, { name: newName.trim() });
+  toast('Album renommé');
+  loadAlbums();
+}
+
+async function deleteAlbum(album) {
+  if (!confirm(`Supprimer "${album.name}" et ses ${album.photo_count} photos?`)) return;
+  await api('DELETE', `/api/vault/albums/${album.id}`);
+  toast('Album supprimé');
+  loadAlbums();
+}
+
+document.getElementById('btn-new-album').addEventListener('click', async () => {
+  const name = prompt('Nom du nouvel album:');
+  if (!name || !name.trim()) return;
+  await api('POST', '/api/vault/albums', { name: name.trim() });
+  toast('Album créé');
+  loadAlbums();
+});
+
+document.getElementById('back-to-albums').addEventListener('click', () => {
+  currentAlbum = null;
+  loadAlbums();
+});
+
+document.getElementById('btn-vault-close').addEventListener('click', closeVault);
+document.getElementById('vault-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeVault();
+});
+
+document.getElementById('upload-input').addEventListener('change', async e => {
+  const files = Array.from(e.target.files);
+  if (!files.length || !currentAlbum) return;
+  toast('Upload en cours...');
+  for (const file of files) {
+    const fd = new FormData();
+    fd.append('file', file);
+    await api('POST', `/api/vault/upload?album_id=${currentAlbum.id}`, fd, true);
+  }
+  e.target.value = '';
+  toast(`${files.length} photo(s) ajoutée(s)`);
+  openAlbum(currentAlbum);
+});
+
+// FULLSCREEN PHOTO
+function openPhotoFullscreen(photo) {
+  const modal = document.getElementById('fullscreen-modal');
+  const img = document.getElementById('fullscreen-img');
+  img.src = photo.url;
+  modal.classList.add('visible');
+}
+
+function closePhotoFullscreen() {
+  document.getElementById('fullscreen-modal').classList.remove('visible');
+}
+
+document.getElementById('close-fullscreen').addEventListener('click', closePhotoFullscreen);
+document.getElementById('fullscreen-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget || e.target.id === 'fullscreen-img') {
+    closePhotoFullscreen();
+  }
+});
+
+// SELECTION MODE
+let selectedPhotos = new Set();
+
+function enterSelectMode() {
+  const photosGrid = document.getElementById('photos-grid');
+  photosGrid.classList.add('select-mode');
+  document.getElementById('btn-select-mode').style.display = 'none';
+  document.getElementById('btn-upload').style.display = 'none';
+  document.getElementById('btn-delete-selected').style.display = 'inline-block';
+  document.getElementById('btn-cancel-select').style.display = 'inline-block';
+  selectedPhotos.clear();
+  updateSelectedCount();
+}
+
+function exitSelectMode() {
+  const photosGrid = document.getElementById('photos-grid');
+  photosGrid.classList.remove('select-mode');
+  document.getElementById('btn-select-mode').style.display = 'inline-block';
+  document.getElementById('btn-upload').style.display = 'inline-block';
+  document.getElementById('btn-delete-selected').style.display = 'none';
+  document.getElementById('btn-cancel-select').style.display = 'none';
+
+  // Remove all selections
+  document.querySelectorAll('.photo-card.selected').forEach(card => {
+    card.classList.remove('selected');
+    card.querySelector('.photo-checkbox').classList.remove('checked');
+  });
+  selectedPhotos.clear();
+}
+
+function togglePhotoSelection(card) {
+  const filename = card.dataset.filename;
+  const checkbox = card.querySelector('.photo-checkbox');
+
+  if (selectedPhotos.has(filename)) {
+    selectedPhotos.delete(filename);
+    card.classList.remove('selected');
+    checkbox.classList.remove('checked');
+  } else {
+    selectedPhotos.add(filename);
+    card.classList.add('selected');
+    checkbox.classList.add('checked');
+  }
+  updateSelectedCount();
+}
+
+function updateSelectedCount() {
+  document.getElementById('selected-count').textContent = selectedPhotos.size;
+}
+
+async function deleteSelectedPhotos() {
+  if (selectedPhotos.size === 0) return;
+
+  if (!confirm(`Supprimer ${selectedPhotos.size} photo(s)?`)) return;
+
+  toast('Suppression en cours...');
+  for (const filename of selectedPhotos) {
+    await api('DELETE', `/api/vault/photo/${filename}`);
+  }
+  toast(`${selectedPhotos.size} photo(s) supprimée(s)`);
+  exitSelectMode();
+  openAlbum(currentAlbum);
+}
+
+document.getElementById('btn-select-mode').addEventListener('click', enterSelectMode);
+document.getElementById('btn-cancel-select').addEventListener('click', exitSelectMode);
+document.getElementById('btn-delete-selected').addEventListener('click', deleteSelectedPhotos);
+
+loadNotes();
+</script>
+</body>
+</html>
