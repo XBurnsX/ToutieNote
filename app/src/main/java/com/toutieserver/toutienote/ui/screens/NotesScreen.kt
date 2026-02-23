@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
 import androidx.compose.material.pullrefresh.pullRefresh
@@ -42,6 +43,7 @@ fun NotesScreen(
     vaultVm: VaultViewModel = viewModel(),
     onNoteClick: (Note?) -> Unit,
     onVaultOpen: () -> Unit,
+    onLogout: () -> Unit = {},
 ) {
     val notes by notesVm.notes.collectAsState()
     val loading by notesVm.loading.collectAsState()
@@ -55,6 +57,7 @@ fun NotesScreen(
 
     var searchQuery by remember { mutableStateOf("") }
     var isRefreshing by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
 
     val filteredNotes = remember(notes, searchQuery) {
         if (searchQuery.isBlank()) notes
@@ -148,6 +151,26 @@ fun NotesScreen(
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceColor),
+                actions = {
+                    Box {
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(Icons.Default.MoreVert, "Menu", tint = TextColor)
+                        }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Déconnexion", color = DangerColor) },
+                                onClick = {
+                                    com.toutieserver.toutienote.data.auth.AuthRepository.clearSession()
+                                    showMenu = false
+                                    onLogout()
+                                }
+                            )
+                        }
+                    }
+                }
             )
         },
         floatingActionButton = {

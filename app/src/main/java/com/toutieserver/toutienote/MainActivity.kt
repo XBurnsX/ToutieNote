@@ -99,6 +99,7 @@ fun AppNavigation() {
             vaultVm = vaultVm,
             onNoteClick = { note -> screen = Screen.NoteEdit(note) },
             onVaultOpen = { screen = Screen.Albums },
+            onLogout = { screen = Screen.Login },
         )
         is Screen.NoteEdit -> {
             BackHandler { screen = Screen.Notes }
