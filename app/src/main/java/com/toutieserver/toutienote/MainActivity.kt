@@ -92,7 +92,7 @@ fun AppNavigation() {
                 vm = vaultVm,
                 onBack = { screen = Screen.PhotoFullscreen(s.photo, s.album) },
                 onCropSaved = { newPhoto, localFile, newFilename ->
-                    val photoToShow = newPhoto ?: com.toutieserver.toutienote.data.models.Photo(
+                    val photoToShow = newPhoto ?: Photo(
                         id = newFilename,
                         filename = newFilename,
                         url = "",

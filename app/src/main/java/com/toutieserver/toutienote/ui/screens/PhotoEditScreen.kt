@@ -339,11 +339,11 @@ fun PhotoEditScreen(
                             }
                             f
                         }
-                        vm.uploadCroppedPhoto(file, photo.filename, photo.albumId) { newPhoto ->
+                        vm.uploadCroppedPhoto(file, photo.filename, photo.albumId) { newPhoto, localFile, newFilename ->
                             if (!bitmap.isRecycled) bitmap.recycle()
                             cropBitmap = null
                             saving = false
-                            onCropSaved(newPhoto)
+                            onCropSaved(newPhoto, localFile, newFilename)
                         }
                     }
                 },

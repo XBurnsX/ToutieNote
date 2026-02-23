@@ -17,10 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import coil.compose.AsyncImage
 import com.toutieserver.toutienote.data.api.ApiService
 import com.toutieserver.toutienote.data.models.Photo
@@ -37,17 +34,9 @@ fun PhotoFullscreenScreen(
 ) {
     var showOverlay by remember { mutableStateOf(false) }
 
-    // Supprimer le fichier temporaire quand on quitte l’écran
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(localImageFile, lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_DESTROY && localImageFile != null && localImageFile.exists()) {
-                localImageFile.delete()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
+    // Supprimer le fichier temporaire (crop) quand on quitte l’écran
+    DisposableEffect(localImageFile) {
         onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
             if (localImageFile != null && localImageFile.exists()) localImageFile.delete()
         }
     }
