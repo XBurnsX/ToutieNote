@@ -293,20 +293,34 @@ class VaultViewModel : ViewModel() {
         try {
             if (contentResolver.delete(uri, null, null) > 0) return true
         } catch (_: SecurityException) {
-            return false
+            // Can't delete directly, will use createDeleteRequest
         } catch (_: Exception) { }
-
-        try {
-            val msUri = resolveMediaStoreUri(contentResolver, uri) ?: return false
-            if (contentResolver.delete(msUri, null, null) > 0) return true
-        } catch (_: SecurityException) {
-            return false
-        } catch (_: Exception) { }
-
         return false
     }
 
     private fun resolveMediaStoreUri(contentResolver: ContentResolver, uri: Uri): Uri? {
+        // Method 1: Try getting MediaStore ID directly from the picker URI
+        try {
+            contentResolver.query(uri, arrayOf(MediaStore.MediaColumns._ID), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val id = cursor.getLong(0)
+                    val imageUri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+                    try {
+                        contentResolver.query(imageUri, arrayOf(MediaStore.Images.Media._ID), null, null, null)?.use {
+                            if (it.moveToFirst()) return imageUri
+                        }
+                    } catch (_: Exception) { }
+                    val videoUri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
+                    try {
+                        contentResolver.query(videoUri, arrayOf(MediaStore.Video.Media._ID), null, null, null)?.use {
+                            if (it.moveToFirst()) return videoUri
+                        }
+                    } catch (_: Exception) { }
+                }
+            }
+        } catch (_: Exception) { }
+
+        // Method 2: Fall back to display name matching
         var displayName: String? = null
         try {
             contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
@@ -315,22 +329,22 @@ class VaultViewModel : ViewModel() {
         } catch (_: Exception) { }
         if (displayName == null) return null
 
-        try {
-            contentResolver.query(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                arrayOf(MediaStore.Images.Media._ID),
-                "${MediaStore.Images.Media.DISPLAY_NAME} = ?",
-                arrayOf(displayName!!),
-                null
-            )?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    return ContentUris.withAppendedId(
-                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                        cursor.getLong(0)
-                    )
+        for (collection in listOf(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)) {
+            try {
+                contentResolver.query(
+                    collection,
+                    arrayOf(MediaStore.MediaColumns._ID),
+                    "${MediaStore.MediaColumns.DISPLAY_NAME} = ?",
+                    arrayOf(displayName!!),
+                    null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        return ContentUris.withAppendedId(collection, cursor.getLong(0))
+                    }
                 }
-            }
-        } catch (_: Exception) { }
+            } catch (_: Exception) { }
+        }
+
         return null
     }
 
@@ -428,6 +442,33 @@ class VaultViewModel : ViewModel() {
             } catch (e: Exception) {
                 _error.value = "Erreur crop: ${e.message}"
             }
+        }
+    }
+
+    private val _duplicateGroups = MutableStateFlow<List<List<Photo>>>(emptyList())
+    val duplicateGroups: StateFlow<List<List<Photo>>> = _duplicateGroups
+
+    fun loadDuplicates(albumId: String? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _loading.value = true
+            try { _duplicateGroups.value = ApiService.getDuplicates(albumId) }
+            catch (e: Exception) { _error.value = "Erreur doublons: ${e.message}" }
+            _loading.value = false
+        }
+    }
+
+    fun cleanDuplicates(toDelete: List<Photo>, albumId: String? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            var deleted = 0
+            for (photo in toDelete) {
+                try {
+                    ApiService.deletePhoto(photo.filename)
+                    deleted++
+                } catch (_: Exception) { }
+            }
+            _message.value = "$deleted doublon(s) supprimé(s) ✓"
+            _photos.value = _photos.value.filter { p -> toDelete.none { it.id == p.id } }
+            loadDuplicates(albumId)
         }
     }
 

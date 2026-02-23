@@ -32,6 +32,7 @@ sealed class Screen {
         val album: Album,
     ) : Screen()
     data class Slideshow(val photos: List<Photo>, val album: Album) : Screen()
+    data class Duplicates(val albumId: String?, val album: Album?) : Screen()
 }
 
 class MainActivity : ComponentActivity() {
@@ -98,6 +99,7 @@ fun AppNavigation() {
                         screen = Screen.AlbumPhotos(album)
                     }
                 },
+                onDuplicates = { screen = Screen.Duplicates(null, null) },
                 onBack = { screen = Screen.Notes },
             )
         }
@@ -114,6 +116,7 @@ fun AppNavigation() {
                     screen = Screen.PhotoFullscreen(index, s.album)
                 },
                 onSlideshow = { slidePhotos -> screen = Screen.Slideshow(slidePhotos, s.album) },
+                onDuplicates = { screen = Screen.Duplicates(s.album.id, s.album) },
                 onBack = { screen = Screen.Albums },
             )
         }
@@ -154,6 +157,15 @@ fun AppNavigation() {
             SlideshowScreen(
                 photos = s.photos,
                 onBack = { screen = Screen.AlbumPhotos(s.album) },
+            )
+        }
+        is Screen.Duplicates -> {
+            val backScreen = if (s.album != null) Screen.AlbumPhotos(s.album) else Screen.Albums
+            BackHandler { screen = backScreen }
+            DuplicatesScreen(
+                vm = vaultVm,
+                albumId = s.albumId,
+                onBack = { screen = backScreen },
             )
         }
     }

@@ -415,6 +415,13 @@ async def upload_photo(file: UploadFile = File(...), album_id: str = None):
         except Exception as e:
             print(f"Erreur traitement image: {e}")
 
+    # Check for duplicates BEFORE inserting (so it doesn't match itself)
+    duplicate_of = None
+    if phash_val:
+        dup = is_duplicate(phash_val)
+        if dup:
+            duplicate_of = dup["id"]
+
     # Save to DB
     db = get_db()
     now = datetime.utcnow().isoformat()
@@ -431,12 +438,6 @@ async def upload_photo(file: UploadFile = File(...), album_id: str = None):
             db.execute("UPDATE albums SET cover_url=? WHERE id=?", (f"/api/vault/photo/{filename}", album_id))
             db.commit()
 
-    duplicate_of = None
-    if phash_val:
-        dup = is_duplicate(phash_val)
-        if dup:
-            duplicate_of = dup["id"]
-
     db.close()
     return {
         "id": photo_id,
@@ -448,6 +449,45 @@ async def upload_photo(file: UploadFile = File(...), album_id: str = None):
         "created_at": now,
         "duplicate_of": duplicate_of
     }
+
+@app.get("/api/vault/duplicates")
+def find_duplicates(album_id: str = None):
+    db = get_db()
+    if album_id:
+        rows = db.execute("SELECT * FROM photos WHERE album_id=? AND phash IS NOT NULL AND phash != ''", (album_id,)).fetchall()
+    else:
+        rows = db.execute("SELECT * FROM photos WHERE phash IS NOT NULL AND phash != ''").fetchall()
+    db.close()
+
+    photos = [dict(r) for r in rows]
+    if not imagehash or len(photos) < 2:
+        return []
+
+    used = set()
+    groups = []
+    for i, p1 in enumerate(photos):
+        if p1["id"] in used:
+            continue
+        group = [p1]
+        used.add(p1["id"])
+        for j in range(i + 1, len(photos)):
+            p2 = photos[j]
+            if p2["id"] in used:
+                continue
+            try:
+                diff = imagehash.hex_to_hash(p1["phash"]) - imagehash.hex_to_hash(p2["phash"])
+                if diff <= 15:
+                    group.append(p2)
+                    used.add(p2["id"])
+            except Exception:
+                pass
+        if len(group) > 1:
+            for g in group:
+                g["url"] = f"/api/vault/photo/{g['filename']}"
+                thumb = g.get("thumbnail_filename")
+                g["thumbnail_url"] = f"/api/vault/photo/{thumb}" if thumb else g["url"]
+            groups.append(group)
+    return groups
 
 @app.get("/api/vault/photo/{filename}")
 def get_photo(filename: str):

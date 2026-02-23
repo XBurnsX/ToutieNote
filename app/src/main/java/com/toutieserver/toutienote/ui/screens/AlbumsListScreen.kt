@@ -39,6 +39,7 @@ import com.toutieserver.toutienote.viewmodels.VaultViewModel
 fun AlbumsListScreen(
     vm: VaultViewModel = viewModel(),
     onAlbumClick: (Album) -> Unit,
+    onDuplicates: () -> Unit = {},
     onBack: () -> Unit,
 ) {
     val albums by vm.albums.collectAsState()
@@ -352,6 +353,9 @@ fun AlbumsListScreen(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceColor),
                 actions = {
+                    IconButton(onClick = onDuplicates) {
+                        Icon(Icons.Default.ContentCopy, "Doublons", tint = AccentColor)
+                    }
                     IconButton(onClick = { showCreateDialog = true }) {
                         Icon(
                             Icons.Default.Add,

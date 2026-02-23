@@ -67,6 +67,7 @@ fun AlbumPhotosScreen(
     vm: VaultViewModel = viewModel(),
     onPhotoClick: (Photo) -> Unit,
     onSlideshow: (List<Photo>) -> Unit,
+    onDuplicates: () -> Unit = {},
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -153,34 +154,13 @@ fun AlbumPhotosScreen(
         cameraPermLauncher.launch(Manifest.permission.CAMERA)
     }
 
-    // Duplicate detection warning
+    // Duplicate detection snackbar
     val dupeCount by vm.duplicateCount.collectAsState()
-    var showDupeDialog by remember { mutableStateOf(false) }
-
     LaunchedEffect(dupeCount) {
-        if (dupeCount > 0) showDupeDialog = true
-    }
-
-    if (showDupeDialog && dupeCount > 0) {
-        AlertDialog(
-            onDismissRequest = { showDupeDialog = false; vm.clearDuplicateCount() },
-            containerColor = SurfaceColor,
-            icon = { Icon(Icons.Default.ContentCopy, null, tint = AccentColor, modifier = Modifier.size(32.dp)) },
-            title = { Text("Doublons détectés", fontWeight = FontWeight.SemiBold) },
-            text = {
-                Text(
-                    "$dupeCount fichier(s) similaire(s) déjà dans le vault. Ils ont été importés quand même.",
-                    color = MutedColor,
-                    fontSize = 14.sp
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = { showDupeDialog = false; vm.clearDuplicateCount() },
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentColor)
-                ) { Text("OK") }
-            }
-        )
+        if (dupeCount > 0) {
+            snackbarHostState.showSnackbar("$dupeCount doublon(s) détecté(s) — utilisez l'outil Doublons pour nettoyer")
+            vm.clearDuplicateCount()
+        }
     }
 
     showDeleteDialog?.let { photo ->
@@ -259,6 +239,9 @@ fun AlbumPhotosScreen(
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceColor),
                 actions = {
                     if (photos.size >= 2) {
+                        IconButton(onClick = onDuplicates) {
+                            Icon(Icons.Default.ContentCopy, "Doublons", tint = AccentColor)
+                        }
                         IconButton(onClick = { onSlideshow(photos) }) {
                             Icon(Icons.Default.Slideshow, "Slideshow", tint = AccentColor)
                         }

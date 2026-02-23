@@ -282,6 +282,34 @@ object ApiService {
         executeForOk(req)
     }
 
+    fun getDuplicates(albumId: String? = null): List<List<Photo>> {
+        val url = if (albumId != null) "$base/api/vault/duplicates?album_id=$albumId"
+                  else "$base/api/vault/duplicates"
+        val req = okhttp3.Request.Builder().url(url).get().build()
+        val body = executeForBody(req)
+        val arr = JSONArray(body)
+        val groups = mutableListOf<List<Photo>>()
+        for (i in 0 until arr.length()) {
+            val groupArr = arr.getJSONArray(i)
+            val group = (0 until groupArr.length()).map { j ->
+                val obj = groupArr.getJSONObject(j)
+                val basePhotoUrl = obj.getString("url")
+                Photo(
+                    id = obj.getString("id"),
+                    filename = obj.getString("filename"),
+                    url = basePhotoUrl,
+                    size = obj.optLong("size"),
+                    createdAt = obj.optString("created_at"),
+                    albumId = optNullableString(obj, "album_id"),
+                    thumbnailUrl = obj.optString("thumbnail_url", basePhotoUrl),
+                    mediaType = obj.optString("media_type", "image")
+                )
+            }
+            groups.add(group)
+        }
+        return groups
+    }
+
     fun deletePhoto(filename: String) {
         val req = okhttp3.Request.Builder().url("$base/api/vault/photo/$filename").delete().build()
         executeForOk(req)
