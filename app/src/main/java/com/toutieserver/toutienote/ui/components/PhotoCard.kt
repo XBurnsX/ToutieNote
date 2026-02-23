@@ -50,6 +50,7 @@ fun PhotoCard(
             model = ImageRequest.Builder(context)
                 .data(ApiService.photoUrl(photo.thumbnailUrl))
                 .memoryCachePolicy(CachePolicy.DISABLED)
+                .diskCachePolicy(CachePolicy.DISABLED)
                 .build(),
             contentDescription = photo.filename,
             contentScale = ContentScale.Crop,

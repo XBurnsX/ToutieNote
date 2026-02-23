@@ -110,6 +110,7 @@ fun PhotoFullscreenScreen(
                             model = ImageRequest.Builder(LocalContext.current)
                                 .data(ApiService.photoUrl(photo.url))
                                 .memoryCachePolicy(CachePolicy.DISABLED)
+                                .diskCachePolicy(CachePolicy.DISABLED)
                                 .build(),
                             contentDescription = photo.filename,
                             contentScale = ContentScale.Fit,

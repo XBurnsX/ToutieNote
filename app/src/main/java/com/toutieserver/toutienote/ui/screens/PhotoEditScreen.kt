@@ -92,7 +92,13 @@ fun PhotoEditScreen(
         }
     }
     LaunchedEffect(error) {
-        error?.let { saving = false; snackbarHostState.showSnackbar(it); vm.clearError() }
+        error?.let {
+            saving = false
+            cropBitmap?.let { bmp -> if (!bmp.isRecycled) bmp.recycle() }
+            cropBitmap = null
+            snackbarHostState.showSnackbar(it)
+            vm.clearError()
+        }
     }
 
     fun launchCrop(ratioX: Float = 0f, ratioY: Float = 0f) {

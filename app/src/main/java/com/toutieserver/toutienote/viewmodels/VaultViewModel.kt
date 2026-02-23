@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.toutieserver.toutienote.data.api.ApiService
@@ -219,12 +220,44 @@ class VaultViewModel : ViewModel() {
         }
     }
 
-    fun uploadPhotos(uris: List<Uri>, contentResolver: ContentResolver, cacheDir: File) {
+    fun importFromGallery(mediaStoreUris: List<Uri>, albumId: String, contentResolver: ContentResolver, cacheDir: File) {
+        Log.d(TAG, "importFromGallery: ${mediaStoreUris.size} MediaStore URIs")
+        viewModelScope.launch(Dispatchers.IO) {
+            _uploading.value = true
+            var uploaded = 0
+            for (uri in mediaStoreUris) {
+                try {
+                    val ext = resolveExtension(contentResolver, uri)
+                    val filename = "vault_${System.currentTimeMillis()}$ext"
+                    val tempFile = File(cacheDir, filename)
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        FileOutputStream(tempFile).use { output -> input.copyTo(output) }
+                    }
+                    val result = ApiService.uploadPhoto(tempFile, filename, albumId)
+                    tempFile.delete()
+                    uploaded++
+                    Log.d(TAG, "  uploaded: $filename (dupe=${result.duplicateOf})")
+                } catch (e: Exception) {
+                    Log.e(TAG, "  upload failed: ${e.message}", e)
+                    _error.value = "Erreur upload: ${e.message}"
+                }
+            }
+            _uploading.value = false
+            if (uploaded > 0) _message.value = "$uploaded fichier(s) importé(s)"
+            loadPhotosForAlbum(albumId)
+
+            if (uploaded > 0 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Log.d(TAG, "Setting pendingGalleryDeletions with ${mediaStoreUris.size} REAL MediaStore URIs")
+                _pendingGalleryDeletions.value = mediaStoreUris
+            }
+        }
+    }
+
+    fun uploadPhotos(uris: List<Uri>, contentResolver: ContentResolver, cacheDir: File, deleteFromGallery: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
             _uploading.value = true
             var uploaded = 0
             var dupes = 0
-            val failedDeletions = mutableListOf<Uri>()
             for (uri in uris) {
                 try {
                     val ext = resolveExtension(contentResolver, uri)
@@ -237,30 +270,29 @@ class VaultViewModel : ViewModel() {
                     tempFile.delete()
                     uploaded++
                     if (result.duplicateOf != null) dupes++
-                    if (!tryDeleteFromGallery(contentResolver, uri)) {
-                        resolveMediaStoreUri(contentResolver, uri)?.let { failedDeletions.add(it) }
-                    }
                 } catch (e: Exception) {
                     _error.value = "Erreur upload: ${e.message}"
                 }
             }
             _uploading.value = false
-            if (uploaded > 0) _message.value = "$uploaded fichier(s) ajouté(s) ✓"
+            if (uploaded > 0) _message.value = "$uploaded fichier(s) ajouté(s)"
             if (dupes > 0) _duplicateCount.value = dupes
             loadPhotos()
-            if (failedDeletions.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                _pendingGalleryDeletions.value = failedDeletions
+
+            if (deleteFromGallery && uploaded > 0) {
+                requestGalleryDeletion(uris, contentResolver)
             }
         }
     }
 
-    fun uploadPhotosToAlbum(uris: List<Uri>, albumId: String, contentResolver: ContentResolver, cacheDir: File) {
+    fun uploadPhotosToAlbum(uris: List<Uri>, albumId: String, contentResolver: ContentResolver, cacheDir: File, deleteFromGallery: Boolean = false) {
+        Log.d(TAG, "uploadPhotosToAlbum: ${uris.size} uris, albumId=$albumId, delete=$deleteFromGallery")
         viewModelScope.launch(Dispatchers.IO) {
             _uploading.value = true
             var uploaded = 0
             var dupes = 0
-            val failedDeletions = mutableListOf<Uri>()
             for (uri in uris) {
+                Log.d(TAG, "  uploading: $uri")
                 try {
                     val ext = resolveExtension(contentResolver, uri)
                     val filename = "vault_${System.currentTimeMillis()}$ext"
@@ -268,84 +300,210 @@ class VaultViewModel : ViewModel() {
                     contentResolver.openInputStream(uri)?.use { input ->
                         FileOutputStream(tempFile).use { output -> input.copyTo(output) }
                     }
+                    Log.d(TAG, "  temp file: ${tempFile.length()} bytes")
                     val result = ApiService.uploadPhoto(tempFile, filename, albumId)
                     tempFile.delete()
                     uploaded++
+                    Log.d(TAG, "  upload OK, duplicateOf=${result.duplicateOf}")
                     if (result.duplicateOf != null) dupes++
-                    if (!tryDeleteFromGallery(contentResolver, uri)) {
-                        resolveMediaStoreUri(contentResolver, uri)?.let { failedDeletions.add(it) }
-                    }
                 } catch (e: Exception) {
+                    Log.e(TAG, "  upload FAILED: ${e.message}", e)
                     _error.value = "Erreur upload: ${e.message}"
                 }
             }
             _uploading.value = false
-            if (uploaded > 0) _message.value = "$uploaded fichier(s) ajouté(s) ✓"
+            if (uploaded > 0) _message.value = "$uploaded fichier(s) ajouté(s)"
             if (dupes > 0) _duplicateCount.value = dupes
             loadPhotosForAlbum(albumId)
-            if (failedDeletions.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                _pendingGalleryDeletions.value = failedDeletions
+
+            if (deleteFromGallery && uploaded > 0) {
+                Log.d(TAG, "requesting gallery deletion for ${uris.size} uris")
+                requestGalleryDeletion(uris, contentResolver)
+            } else {
+                Log.d(TAG, "skip gallery deletion: delete=$deleteFromGallery uploaded=$uploaded")
             }
         }
     }
 
-    private fun tryDeleteFromGallery(contentResolver: ContentResolver, uri: Uri): Boolean {
-        try {
-            if (contentResolver.delete(uri, null, null) > 0) return true
-        } catch (_: SecurityException) {
-            // Can't delete directly, will use createDeleteRequest
-        } catch (_: Exception) { }
-        return false
-    }
+    private fun requestGalleryDeletion(sourceUris: List<Uri>, contentResolver: ContentResolver) {
+        Log.d(TAG, "=== requestGalleryDeletion START ===")
+        Log.d(TAG, "SDK=${Build.VERSION.SDK_INT}, uris=${sourceUris.size}")
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            Log.w(TAG, "SDK < R (30), skipping createDeleteRequest")
+            return
+        }
 
-    private fun resolveMediaStoreUri(contentResolver: ContentResolver, uri: Uri): Uri? {
-        // Method 1: Try getting MediaStore ID directly from the picker URI
-        try {
-            contentResolver.query(uri, arrayOf(MediaStore.MediaColumns._ID), null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val id = cursor.getLong(0)
-                    val imageUri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
-                    try {
-                        contentResolver.query(imageUri, arrayOf(MediaStore.Images.Media._ID), null, null, null)?.use {
-                            if (it.moveToFirst()) return imageUri
-                        }
-                    } catch (_: Exception) { }
-                    val videoUri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
-                    try {
-                        contentResolver.query(videoUri, arrayOf(MediaStore.Video.Media._ID), null, null, null)?.use {
-                            if (it.moveToFirst()) return videoUri
-                        }
-                    } catch (_: Exception) { }
-                }
-            }
-        } catch (_: Exception) { }
+        val mediaStoreUris = mutableListOf<Uri>()
 
-        // Method 2: Fall back to display name matching
-        var displayName: String? = null
-        try {
-            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) displayName = cursor.getString(0)
-            }
-        } catch (_: Exception) { }
-        if (displayName == null) return null
+        for (uri in sourceUris) {
+            Log.d(TAG, "--- Resolving: $uri")
+            Log.d(TAG, "    scheme=${uri.scheme} authority=${uri.authority}")
+            Log.d(TAG, "    path=${uri.path}")
+            Log.d(TAG, "    pathSegments=${uri.pathSegments}")
 
-        for (collection in listOf(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)) {
+            var displayName: String? = null
+            var fileSize: Long = -1
             try {
-                contentResolver.query(
-                    collection,
-                    arrayOf(MediaStore.MediaColumns._ID),
-                    "${MediaStore.MediaColumns.DISPLAY_NAME} = ?",
-                    arrayOf(displayName!!),
-                    null
-                )?.use { cursor ->
-                    if (cursor.moveToFirst()) {
-                        return ContentUris.withAppendedId(collection, cursor.getLong(0))
+                contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) {
+                        displayName = c.getString(0)
+                        fileSize = c.getLong(1)
                     }
                 }
-            } catch (_: Exception) { }
+            } catch (e: Exception) {
+                Log.e(TAG, "    OpenableColumns query FAILED: ${e.message}")
+            }
+            Log.d(TAG, "    displayName=$displayName, fileSize=$fileSize")
+
+            val collections = listOf(
+                "images" to MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                "video" to MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            )
+
+            var found: Uri? = null
+
+            // Method 1: Find by display name + size in MediaStore
+            if (displayName != null) {
+                for ((label, col) in collections) {
+                    if (found != null) break
+                    try {
+                        val sel = if (fileSize > 0)
+                            "${MediaStore.MediaColumns.DISPLAY_NAME} = ? AND ${MediaStore.MediaColumns.SIZE} = ?"
+                        else
+                            "${MediaStore.MediaColumns.DISPLAY_NAME} = ?"
+                        val args = if (fileSize > 0) arrayOf(displayName!!, fileSize.toString())
+                                   else arrayOf(displayName!!)
+                        Log.d(TAG, "    M1: querying $label where $sel args=${args.toList()}")
+                        contentResolver.query(col, arrayOf(MediaStore.MediaColumns._ID), sel, args, null)?.use { c ->
+                            val count = c.count
+                            Log.d(TAG, "    M1: $label returned $count rows")
+                            if (c.moveToFirst()) {
+                                found = ContentUris.withAppendedId(col, c.getLong(0))
+                                Log.d(TAG, "    M1 FOUND: $found")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "    M1 $label ERROR: ${e.message}")
+                    }
+                }
+            }
+
+            // Method 1b: Find by file size only (Google Photos cloud picker uses internal names)
+            if (found == null && fileSize > 0) {
+                Log.d(TAG, "    M1b: trying size-only match ($fileSize bytes)")
+                for ((label, col) in collections) {
+                    if (found != null) break
+                    try {
+                        contentResolver.query(
+                            col,
+                            arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME),
+                            "${MediaStore.MediaColumns.SIZE} = ?",
+                            arrayOf(fileSize.toString()),
+                            null
+                        )?.use { c ->
+                            Log.d(TAG, "    M1b: $label returned ${c.count} rows")
+                            if (c.count == 1 && c.moveToFirst()) {
+                                found = ContentUris.withAppendedId(col, c.getLong(0))
+                                Log.d(TAG, "    M1b FOUND (unique size): $found (${c.getString(1)})")
+                            } else if (c.count > 1) {
+                                Log.d(TAG, "    M1b: ${c.count} files with same size, skipping (ambiguous)")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "    M1b $label ERROR: ${e.message}")
+                    }
+                }
+            }
+
+            // Method 1c: If size matched multiple, verify by reading first bytes
+            if (found == null && fileSize > 0) {
+                Log.d(TAG, "    M1c: trying size match + content verification")
+                val srcHeader = try {
+                    contentResolver.openInputStream(uri)?.use { it.readNBytes(4096) }
+                } catch (_: Exception) { null }
+
+                if (srcHeader != null && srcHeader.isNotEmpty()) {
+                    for ((label, col) in collections) {
+                        if (found != null) break
+                        try {
+                            contentResolver.query(
+                                col,
+                                arrayOf(MediaStore.MediaColumns._ID),
+                                "${MediaStore.MediaColumns.SIZE} = ?",
+                                arrayOf(fileSize.toString()),
+                                null
+                            )?.use { c ->
+                                while (c.moveToNext()) {
+                                    val candidateId = c.getLong(0)
+                                    val candidateUri = ContentUris.withAppendedId(col, candidateId)
+                                    try {
+                                        val candidateHeader = contentResolver.openInputStream(candidateUri)?.use { it.readNBytes(4096) }
+                                        if (candidateHeader != null && srcHeader.contentEquals(candidateHeader)) {
+                                            found = candidateUri
+                                            Log.d(TAG, "    M1c FOUND (content match): $found")
+                                            break
+                                        }
+                                    } catch (_: Exception) { }
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "    M1c $label ERROR: ${e.message}")
+                        }
+                    }
+                }
+            }
+
+            // Method 2: Extract numeric ID from picker URI path
+            if (found == null) {
+                try {
+                    val segments = uri.pathSegments
+                    val mediaIdx = segments.lastIndexOf("media")
+                    val idStr = if (mediaIdx >= 0 && mediaIdx < segments.lastIndex) segments[mediaIdx + 1]
+                                else uri.lastPathSegment
+                    val mediaId = idStr?.toLongOrNull()
+                    Log.d(TAG, "    M2: extracted mediaId=$mediaId from segments")
+                    if (mediaId != null) {
+                        for ((label, col) in collections) {
+                            if (found != null) break
+                            val msUri = ContentUris.withAppendedId(col, mediaId)
+                            try {
+                                contentResolver.query(msUri, arrayOf(MediaStore.MediaColumns._ID), null, null, null)?.use {
+                                    Log.d(TAG, "    M2: query $label/$mediaId returned ${it.count} rows")
+                                    if (it.moveToFirst()) {
+                                        found = msUri
+                                        Log.d(TAG, "    M2 FOUND: $found")
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "    M2 $label ERROR: ${e.message}")
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "    M2 path parse ERROR: ${e.message}")
+                }
+            }
+
+            if (found != null) {
+                Log.d(TAG, "    RESOLVED: $found")
+                mediaStoreUris.add(found!!)
+            } else {
+                Log.e(TAG, "    FAILED TO RESOLVE: $uri")
+            }
         }
 
-        return null
+        Log.d(TAG, "=== RESULT: ${mediaStoreUris.size}/${sourceUris.size} resolved ===")
+        if (mediaStoreUris.isNotEmpty()) {
+            Log.d(TAG, "Setting pendingGalleryDeletions: $mediaStoreUris")
+            _pendingGalleryDeletions.value = mediaStoreUris
+        } else {
+            Log.e(TAG, "No URIs resolved, cannot delete from gallery")
+            _error.value = "Impossible de résoudre les URIs pour suppression"
+        }
+    }
+
+    companion object {
+        private const val TAG = "VaultVM"
     }
 
     // ── Export vers la galerie ──────────────────────────────────
@@ -448,17 +606,31 @@ class VaultViewModel : ViewModel() {
     private val _duplicateGroups = MutableStateFlow<List<List<Photo>>>(emptyList())
     val duplicateGroups: StateFlow<List<List<Photo>>> = _duplicateGroups
 
-    fun loadDuplicates(albumId: String? = null) {
+    private val _scanning = MutableStateFlow(false)
+    val scanning: StateFlow<Boolean> = _scanning
+
+    private val _scannedCount = MutableStateFlow(0)
+    val scannedCount: StateFlow<Int> = _scannedCount
+
+    fun scanDuplicates(albumId: String? = null) {
         viewModelScope.launch(Dispatchers.IO) {
-            _loading.value = true
-            try { _duplicateGroups.value = ApiService.getDuplicates(albumId) }
-            catch (e: Exception) { _error.value = "Erreur doublons: ${e.message}" }
-            _loading.value = false
+            _scanning.value = true
+            _duplicateGroups.value = emptyList()
+            _scannedCount.value = 0
+            try {
+                val result = ApiService.scanDuplicates(albumId)
+                _duplicateGroups.value = result.groups
+                _scannedCount.value = result.scanned
+            } catch (e: Exception) {
+                _error.value = "Erreur scan: ${e.message}"
+            }
+            _scanning.value = false
         }
     }
 
     fun cleanDuplicates(toDelete: List<Photo>, albumId: String? = null) {
         viewModelScope.launch(Dispatchers.IO) {
+            _scanning.value = true
             var deleted = 0
             for (photo in toDelete) {
                 try {
@@ -466,9 +638,11 @@ class VaultViewModel : ViewModel() {
                     deleted++
                 } catch (_: Exception) { }
             }
-            _message.value = "$deleted doublon(s) supprimé(s) ✓"
+            _message.value = "$deleted doublon(s) supprimé(s)"
             _photos.value = _photos.value.filter { p -> toDelete.none { it.id == p.id } }
-            loadDuplicates(albumId)
+            _duplicateGroups.value = emptyList()
+            _scannedCount.value = 0
+            _scanning.value = false
         }
     }
 

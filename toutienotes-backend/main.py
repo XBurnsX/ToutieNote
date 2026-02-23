@@ -142,6 +142,64 @@ def compute_phash(image_path: Path) -> str:
     except Exception:
         return ""
 
+def compute_crop_hash(image_path: Path):
+    """Compute crop-resistant multi-hash using phash per segment (more discriminating)."""
+    if imagehash is None:
+        return None
+    try:
+        img = Image.open(image_path)
+        return imagehash.crop_resistant_hash(img, hash_func=imagehash.phash)
+    except Exception:
+        return None
+
+def are_crop_similar(ch1, ch2) -> bool:
+    """Check if two images are crops of each other by comparing segment hashes."""
+    try:
+        segs1 = ch1.segment_hashes
+        segs2 = ch2.segment_hashes
+    except Exception:
+        return False
+    if not segs1 or not segs2:
+        return False
+
+    small, big = (segs1, segs2) if len(segs1) <= len(segs2) else (segs2, segs1)
+
+    matched = 0
+    used = set()
+    for s in small:
+        best_diff = 999
+        best_j = -1
+        for j, b in enumerate(big):
+            if j in used:
+                continue
+            try:
+                d = s - b
+                if d < best_diff:
+                    best_diff = d
+                    best_j = j
+            except Exception:
+                pass
+        if best_diff <= 10 and best_j >= 0:
+            matched += 1
+            used.add(best_j)
+
+    needed = max(1, int(len(small) * 0.15))
+    return matched >= needed
+
+def are_resize_similar(path1: Path, path2: Path, threshold: int = 12) -> bool:
+    """Resize both images to same small size and compare phash — catches aggressive crops."""
+    if imagehash is None:
+        return False
+    try:
+        img1 = Image.open(path1).resize((128, 128)).convert("L")
+        img2 = Image.open(path2).resize((128, 128)).convert("L")
+        h1 = imagehash.phash(img1, hash_size=16)
+        h2 = imagehash.phash(img2, hash_size=16)
+        diff = h1 - h2
+        return diff <= threshold
+    except Exception:
+        return False
+
 def is_duplicate(new_phash: str, threshold: int = 5):
     if not new_phash or imagehash is None:
         return None
@@ -450,18 +508,28 @@ async def upload_photo(file: UploadFile = File(...), album_id: str = None):
         "duplicate_of": duplicate_of
     }
 
-@app.get("/api/vault/duplicates")
-def find_duplicates(album_id: str = None):
+@app.post("/api/vault/scan-duplicates")
+def scan_duplicates(album_id: str = None):
+    """Deep scan: compares photos using global phash + block-level hashing (crop-resistant)."""
     db = get_db()
     if album_id:
-        rows = db.execute("SELECT * FROM photos WHERE album_id=? AND phash IS NOT NULL AND phash != ''", (album_id,)).fetchall()
+        rows = db.execute("SELECT * FROM photos WHERE album_id=? AND media_type='image'", (album_id,)).fetchall()
     else:
-        rows = db.execute("SELECT * FROM photos WHERE phash IS NOT NULL AND phash != ''").fetchall()
+        rows = db.execute("SELECT * FROM photos WHERE media_type='image'").fetchall()
     db.close()
 
     photos = [dict(r) for r in rows]
     if not imagehash or len(photos) < 2:
-        return []
+        return {"groups": [], "scanned": 0}
+
+    # Pre-compute crop-resistant hashes for crop detection
+    crop_cache = {}
+    for p in photos:
+        path = VAULT_DIR / p["filename"]
+        if path.exists():
+            ch = compute_crop_hash(path)
+            if ch is not None:
+                crop_cache[p["id"]] = ch
 
     used = set()
     groups = []
@@ -474,20 +542,41 @@ def find_duplicates(album_id: str = None):
             p2 = photos[j]
             if p2["id"] in used:
                 continue
-            try:
-                diff = imagehash.hex_to_hash(p1["phash"]) - imagehash.hex_to_hash(p2["phash"])
-                if diff <= 15:
-                    group.append(p2)
-                    used.add(p2["id"])
-            except Exception:
-                pass
+
+            similar = False
+
+            # Check 1: Global phash (very strict — nearly identical photos)
+            if p1.get("phash") and p2.get("phash"):
+                try:
+                    diff = imagehash.hex_to_hash(p1["phash"]) - imagehash.hex_to_hash(p2["phash"])
+                    if diff <= 4:
+                        similar = True
+                except Exception:
+                    pass
+
+            # Check 2: crop_resistant_hash (segment comparison)
+            if not similar and p1["id"] in crop_cache and p2["id"] in crop_cache:
+                similar = are_crop_similar(crop_cache[p1["id"]], crop_cache[p2["id"]])
+
+            # Check 3: resize both to same size and compare (catches aggressive crops)
+            if not similar:
+                path1 = VAULT_DIR / p1["filename"]
+                path2 = VAULT_DIR / p2["filename"]
+                if path1.exists() and path2.exists():
+                    similar = are_resize_similar(path1, path2)
+
+            if similar:
+                group.append(p2)
+                used.add(p2["id"])
+
         if len(group) > 1:
             for g in group:
                 g["url"] = f"/api/vault/photo/{g['filename']}"
                 thumb = g.get("thumbnail_filename")
                 g["thumbnail_url"] = f"/api/vault/photo/{thumb}" if thumb else g["url"]
             groups.append(group)
-    return groups
+
+    return {"groups": groups, "scanned": len(photos)}
 
 @app.get("/api/vault/photo/{filename}")
 def get_photo(filename: str):
@@ -525,12 +614,18 @@ async def replace_photo(photo_id: str, file: UploadFile = File(...)):
         raise HTTPException(404, "Photo introuvable")
 
     old_filename = row["filename"]
+    old_thumb = dict(row).get("thumbnail_filename")
     album_id = row["album_id"]
     created_at = row["created_at"]
 
+    # Delete old files
     old_path = VAULT_DIR / old_filename
     if old_path.exists():
         old_path.unlink()
+    if old_thumb:
+        old_thumb_path = VAULT_DIR / old_thumb
+        if old_thumb_path.exists():
+            old_thumb_path.unlink()
 
     ext = Path(file.filename).suffix.lower() or ".jpg"
     new_filename = f"{photo_id}_{int(datetime.utcnow().timestamp())}{ext}"
@@ -538,7 +633,23 @@ async def replace_photo(photo_id: str, file: UploadFile = File(...)):
     with open(new_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    db.execute("UPDATE photos SET filename=? WHERE id=?", (new_filename, photo_id))
+    # Regenerate thumbnail and phash
+    thumbnail_filename = None
+    phash_val = None
+    try:
+        img = Image.open(new_path)
+        phash_val = str(imagehash.phash(img)) if imagehash else None
+        img.thumbnail((500, 500))
+        thumbnail_filename = f"thumb_{photo_id}_{int(datetime.utcnow().timestamp())}.webp"
+        thumb_dest = VAULT_DIR / thumbnail_filename
+        img.save(thumb_dest, format="WEBP", quality=80)
+    except Exception:
+        pass
+
+    db.execute(
+        "UPDATE photos SET filename=?, thumbnail_filename=?, phash=? WHERE id=?",
+        (new_filename, thumbnail_filename, phash_val, photo_id)
+    )
 
     # Update album cover if it pointed to the old file
     if album_id:
@@ -550,10 +661,13 @@ async def replace_photo(photo_id: str, file: UploadFile = File(...)):
 
     db.commit()
     db.close()
+
+    thumb_url = f"/api/vault/photo/{thumbnail_filename}" if thumbnail_filename else f"/api/vault/photo/{new_filename}"
     return {
         "id": photo_id,
         "filename": new_filename,
         "url": f"/api/vault/photo/{new_filename}",
+        "thumbnail_url": thumb_url,
         "album_id": album_id,
         "created_at": created_at
     }

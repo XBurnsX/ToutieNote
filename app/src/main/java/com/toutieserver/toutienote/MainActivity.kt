@@ -33,6 +33,7 @@ sealed class Screen {
     ) : Screen()
     data class Slideshow(val photos: List<Photo>, val album: Album) : Screen()
     data class Duplicates(val albumId: String?, val album: Album?) : Screen()
+    data class GalleryPicker(val album: Album) : Screen()
 }
 
 class MainActivity : ComponentActivity() {
@@ -49,6 +50,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun AppNavigation() {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val notesVm: NotesViewModel = viewModel()
     val vaultVm: VaultViewModel = viewModel()
 
@@ -117,6 +119,7 @@ fun AppNavigation() {
                 },
                 onSlideshow = { slidePhotos -> screen = Screen.Slideshow(slidePhotos, s.album) },
                 onDuplicates = { screen = Screen.Duplicates(s.album.id, s.album) },
+                onImportFromGallery = { screen = Screen.GalleryPicker(s.album) },
                 onBack = { screen = Screen.Albums },
             )
         }
@@ -166,6 +169,16 @@ fun AppNavigation() {
                 vm = vaultVm,
                 albumId = s.albumId,
                 onBack = { screen = backScreen },
+            )
+        }
+        is Screen.GalleryPicker -> {
+            BackHandler { screen = Screen.AlbumPhotos(s.album) }
+            GalleryPickerScreen(
+                onConfirm = { mediaStoreUris ->
+                    screen = Screen.AlbumPhotos(s.album)
+                    vaultVm.importFromGallery(mediaStoreUris, s.album.id, context.contentResolver, context.cacheDir)
+                },
+                onCancel = { screen = Screen.AlbumPhotos(s.album) },
             )
         }
     }

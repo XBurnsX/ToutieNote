@@ -1,5 +1,8 @@
 package com.toutieserver.toutienote.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -16,6 +19,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -32,21 +36,22 @@ fun DuplicatesScreen(
     onBack: () -> Unit,
 ) {
     val groups by vm.duplicateGroups.collectAsState()
-    val loading by vm.loading.collectAsState()
+    val scanning by vm.scanning.collectAsState()
+    val scannedCount by vm.scannedCount.collectAsState()
     val message by vm.message.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // Did user trigger a scan at least once
+    var hasScanned by remember { mutableStateOf(false) }
 
     // Track which photo to KEEP per group (index in group)
     val kept = remember(groups) {
         mutableStateMapOf<Int, String>().apply {
             groups.forEachIndexed { i, group ->
-                // Default: keep the first (oldest) photo
                 put(i, group.first().id)
             }
         }
     }
-
-    LaunchedEffect(Unit) { vm.loadDuplicates(albumId) }
 
     LaunchedEffect(message) {
         message?.let { snackbarHostState.showSnackbar(it); vm.clearMessage() }
@@ -69,9 +74,10 @@ fun DuplicatesScreen(
                 title = {
                     Column {
                         Text("DOUBLONS", fontFamily = FontFamily.Monospace, fontSize = 13.sp, color = MutedColor, letterSpacing = 3.sp)
-                        if (groups.isNotEmpty()) {
+                        if (hasScanned && !scanning) {
                             Text(
-                                "${groups.size} groupe${if (groups.size > 1) "s" else ""} trouvé${if (groups.size > 1) "s" else ""}",
+                                if (groups.isNotEmpty()) "${groups.size} groupe${if (groups.size > 1) "s" else ""} · $scannedCount photos scannées"
+                                else "$scannedCount photos scannées",
                                 fontSize = 11.sp, color = MutedColor.copy(alpha = 0.7f), fontFamily = FontFamily.Monospace
                             )
                         }
@@ -81,32 +87,52 @@ fun DuplicatesScreen(
             )
         },
         bottomBar = {
-            if (groups.isNotEmpty()) {
-                Surface(
-                    color = SurfaceColor,
-                    tonalElevation = 8.dp,
+            Surface(color = SurfaceColor, tonalElevation = 8.dp) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 12.dp)
+                        .navigationBarsPadding()
                 ) {
-                    Button(
-                        onClick = {
-                            val photosToDelete = groups.flatMapIndexed { i, group ->
-                                group.filter { it.id != kept[i] }
-                            }
-                            if (photosToDelete.isNotEmpty()) {
-                                vm.cleanDuplicates(photosToDelete, albumId)
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 12.dp)
-                            .navigationBarsPadding(),
-                        colors = ButtonDefaults.buttonColors(containerColor = DangerColor),
-                        shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(vertical = 14.dp),
-                        enabled = toDeleteCount > 0
-                    ) {
-                        Icon(Icons.Default.CleaningServices, null, modifier = Modifier.size(20.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Nettoyer ($toDeleteCount)", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    if (groups.isNotEmpty() && !scanning) {
+                        Button(
+                            onClick = {
+                                val photosToDelete = groups.flatMapIndexed { i, group ->
+                                    group.filter { it.id != kept[i] }
+                                }
+                                if (photosToDelete.isNotEmpty()) {
+                                    vm.cleanDuplicates(photosToDelete, albumId)
+                                    hasScanned = false
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = DangerColor),
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(vertical = 14.dp),
+                            enabled = toDeleteCount > 0
+                        ) {
+                            Icon(Icons.Default.CleaningServices, null, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Nettoyer ($toDeleteCount)", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                    }
+
+                    if (!scanning) {
+                        OutlinedButton(
+                            onClick = { hasScanned = true; vm.scanDuplicates(albumId) },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = AccentColor),
+                            contentPadding = PaddingValues(vertical = 14.dp),
+                        ) {
+                            Icon(Icons.Default.SearchOff, null, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                if (hasScanned) "Re-scanner" else "Scanner les doublons",
+                                fontSize = 15.sp, fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
                 }
             }
@@ -114,33 +140,73 @@ fun DuplicatesScreen(
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             when {
-                loading -> CircularProgressIndicator(
-                    color = AccentColor, modifier = Modifier.align(Alignment.Center)
-                )
-                groups.isEmpty() -> Column(
-                    modifier = Modifier.align(Alignment.Center).padding(32.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text("✨", fontSize = 64.sp)
-                    Spacer(Modifier.height(16.dp))
-                    Text("Aucun doublon", fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = TextColor)
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "Toutes vos photos sont uniques",
-                        color = MutedColor, fontSize = 14.sp
-                    )
+                scanning -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center).padding(48.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        CircularProgressIndicator(color = AccentColor, strokeWidth = 3.dp)
+                        Spacer(Modifier.height(24.dp))
+                        Text("Analyse en cours...", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = TextColor)
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Comparaison par blocs de pixels\npour détecter les photos similaires\net les versions rognées",
+                            color = MutedColor, fontSize = 13.sp, textAlign = TextAlign.Center,
+                            lineHeight = 18.sp
+                        )
+                        Spacer(Modifier.height(24.dp))
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
+                            color = AccentColor,
+                            trackColor = Surface2Color,
+                        )
+                    }
                 }
+
+                !hasScanned -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center).padding(48.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(Icons.Default.FindInPage, null, tint = MutedColor.copy(alpha = 0.4f), modifier = Modifier.size(80.dp))
+                        Spacer(Modifier.height(20.dp))
+                        Text("Scanner vos doublons", fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = TextColor)
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Analyse intelligente qui détecte les photos\nsimilaires, même si elles ont été rognées\nou recadrées.",
+                            color = MutedColor, fontSize = 13.sp, textAlign = TextAlign.Center,
+                            lineHeight = 18.sp
+                        )
+                    }
+                }
+
+                groups.isEmpty() -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center).padding(32.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("✨", fontSize = 64.sp)
+                        Spacer(Modifier.height(16.dp))
+                        Text("Aucun doublon", fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = TextColor)
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Toutes vos $scannedCount photos sont uniques",
+                            color = MutedColor, fontSize = 14.sp
+                        )
+                    }
+                }
+
                 else -> LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     groups.forEachIndexed { groupIndex, group ->
                         item(key = "header_$groupIndex") {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(top = if (groupIndex > 0) 16.dp else 0.dp, bottom = 8.dp),
+                                    .padding(top = if (groupIndex > 0) 20.dp else 4.dp, bottom = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 HorizontalDivider(modifier = Modifier.weight(1f), color = BorderColor)
@@ -162,66 +228,75 @@ fun DuplicatesScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(12.dp))
-                                    .background(if (isKept) AccentColor.copy(alpha = 0.1f) else Surface2Color)
+                                    .background(if (isKept) AccentColor.copy(alpha = 0.12f) else Surface2Color)
                                     .clickable { kept[groupIndex] = photo.id }
                                     .padding(10.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // Thumbnail
                                 AsyncImage(
                                     model = ApiService.photoUrl(photo.thumbnailUrl),
                                     contentDescription = null,
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier
-                                        .size(64.dp)
+                                        .size(72.dp)
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(SurfaceColor)
                                 )
 
                                 Spacer(Modifier.width(12.dp))
 
-                                // Info
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         photo.filename,
-                                        fontSize = 13.sp,
+                                        fontSize = 12.sp,
                                         color = TextColor,
                                         fontFamily = FontFamily.Monospace,
                                         maxLines = 1
                                     )
+                                    Spacer(Modifier.height(2.dp))
                                     Text(
                                         photo.createdAt.take(10),
                                         fontSize = 11.sp,
                                         color = MutedColor,
                                         fontFamily = FontFamily.Monospace
                                     )
+                                    AnimatedVisibility(visible = isKept, enter = fadeIn(), exit = fadeOut()) {
+                                        Text(
+                                            "GARDER",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = AccentColor,
+                                            fontFamily = FontFamily.Monospace,
+                                            letterSpacing = 2.sp,
+                                            modifier = Modifier.padding(top = 4.dp)
+                                        )
+                                    }
                                 }
 
-                                // Checkbox
                                 if (isKept) {
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
                                         color = AccentColor,
-                                        modifier = Modifier.size(32.dp)
+                                        modifier = Modifier.size(36.dp)
                                     ) {
                                         Icon(
                                             Icons.Default.Check,
                                             "Garder",
-                                            tint = TextColor,
-                                            modifier = Modifier.padding(6.dp)
+                                            tint = BgColor,
+                                            modifier = Modifier.padding(8.dp)
                                         )
                                     }
                                 } else {
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
-                                        color = DangerColor.copy(alpha = 0.2f),
-                                        modifier = Modifier.size(32.dp)
+                                        color = DangerColor.copy(alpha = 0.15f),
+                                        modifier = Modifier.size(36.dp)
                                     ) {
                                         Icon(
                                             Icons.Default.DeleteOutline,
                                             "Supprimer",
                                             tint = DangerColor,
-                                            modifier = Modifier.padding(6.dp)
+                                            modifier = Modifier.padding(8.dp)
                                         )
                                     }
                                 }

@@ -58,6 +58,7 @@ dependencies {
 
     // Image loading
     implementation("io.coil-kt:coil-compose:2.6.0")
+    implementation("io.coil-kt:coil-video:2.6.0")
 
     implementation("androidx.appcompat:appcompat:1.7.0")
 

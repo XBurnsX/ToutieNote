@@ -68,6 +68,7 @@ fun AlbumPhotosScreen(
     onPhotoClick: (Photo) -> Unit,
     onSlideshow: (List<Photo>) -> Unit,
     onDuplicates: () -> Unit = {},
+    onImportFromGallery: () -> Unit = {},
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -84,14 +85,21 @@ fun AlbumPhotosScreen(
     val pendingDeletions by vm.pendingGalleryDeletions.collectAsState()
     val deleteLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
-    ) { vm.clearPendingDeletions() }
+    ) { result ->
+        android.util.Log.d("VaultUI", "deleteRequest result: ${result.resultCode}")
+        vm.clearPendingDeletions()
+    }
 
     LaunchedEffect(pendingDeletions) {
         if (pendingDeletions.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            android.util.Log.d("VaultUI", "createDeleteRequest for ${pendingDeletions.size} URIs: $pendingDeletions")
             try {
                 val intent = MediaStore.createDeleteRequest(context.contentResolver, pendingDeletions)
+                android.util.Log.d("VaultUI", "createDeleteRequest OK, launching intent")
                 deleteLauncher.launch(IntentSenderRequest.Builder(intent.intentSender).build())
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                android.util.Log.e("VaultUI", "createDeleteRequest FAILED", e)
+                snackbarHostState.showSnackbar("Erreur suppression galerie: ${e.message}")
                 vm.clearPendingDeletions()
             }
         }
@@ -113,29 +121,16 @@ fun AlbumPhotosScreen(
         error?.let { snackbarHostState.showSnackbar(it); vm.clearError() }
     }
 
-    // Photo/Video picker (images + videos)
-    val mediaPickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickMultipleVisualMedia()
-    ) { uris ->
-        if (uris.isNotEmpty()) {
-            vm.uploadPhotosToAlbum(uris, album.id, context.contentResolver, context.cacheDir)
-        }
-    }
+    fun pickPhotos() = onImportFromGallery()
 
-    fun pickPhotos() {
-        mediaPickerLauncher.launch(
-            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-        )
-    }
-
-    // Camera capture (never in camera roll)
+    // Camera capture (never in camera roll — no delete needed)
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
 
     val cameraLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture()
     ) { success ->
         if (success && cameraUri != null) {
-            vm.uploadPhotosToAlbum(listOf(cameraUri!!), album.id, context.contentResolver, context.cacheDir)
+            vm.uploadPhotosToAlbum(listOf(cameraUri!!), album.id, context.contentResolver, context.cacheDir, deleteFromGallery = false)
         }
     }
 
