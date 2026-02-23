@@ -34,7 +34,8 @@ class NotesViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             _loading.value = true
             try {
-                _notes.value = ApiService.getNotes()
+                val list = ApiService.getNotes().sortedByDescending { it.updatedAt }
+                _notes.value = list
             } catch (e: Exception) {
                 _error.value = "Erreur connexion serveur"
             }
@@ -61,10 +62,9 @@ class NotesViewModel : ViewModel() {
             delay(1200)
             try {
                 ApiService.updateNote(id, title, content)
-                val updated = _notes.value.map {
-                    if (it.id == id) it.copy(title = title, content = content) else it
-                }
-                _notes.value = updated
+                val updatedNote = _notes.value.find { it.id == id }?.copy(title = title, content = content)
+                val rest = _notes.value.filter { it.id != id }
+                _notes.value = if (updatedNote != null) listOf(updatedNote) + rest else _notes.value
                 _syncSuccess.value = true
             } catch (e: Exception) { /* silent */ }
         }

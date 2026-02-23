@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.toutieserver.toutienote.data.models.Note
 import com.toutieserver.toutienote.ui.theme.*
+import com.toutieserver.toutienote.util.formatNoteDate
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -39,17 +40,30 @@ fun NoteItem(
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 14.dp, vertical = 12.dp)
     ) {
-        Column {
-            Text(
-                text = note.title.ifEmpty { "Sans titre" },
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                color = TextColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = note.title.ifEmpty { "Sans titre" },
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = TextColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = formatNoteDate(note.updatedAt),
+                    fontSize = 11.sp,
+                    color = MutedColor,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                )
+            }
             if (note.content.isNotEmpty()) {
-                Spacer(Modifier.height(3.dp))
+                Spacer(Modifier.height(4.dp))
                 Text(
                     text = note.content.replace("\n", " "),
                     fontSize = 12.sp,

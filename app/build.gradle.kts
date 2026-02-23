@@ -19,6 +19,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
@@ -34,6 +35,10 @@ android {
     buildFeatures {
         compose = true
     }
+
+    lint {
+        disable += "NullSafeMutableLiveData"
+    }
 }
 
 dependencies {
@@ -43,6 +48,7 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+    implementation("androidx.compose.material:material")
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
@@ -66,4 +72,10 @@ dependencies {
     implementation("com.github.MoyuruAizawa:Cropify:0.5.2")
 
     debugImplementation(libs.androidx.ui.tooling)
+
+    // Tests
+    testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation("androidx.test:core:1.6.0")
 }
