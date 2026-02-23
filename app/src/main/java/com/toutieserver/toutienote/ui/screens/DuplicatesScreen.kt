@@ -38,6 +38,8 @@ fun DuplicatesScreen(
     val groups by vm.duplicateGroups.collectAsState()
     val scanning by vm.scanning.collectAsState()
     val scannedCount by vm.scannedCount.collectAsState()
+    val scanTotal by vm.scanTotal.collectAsState()
+    val scanPercent by vm.scanPercent.collectAsState()
     val message by vm.message.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -145,18 +147,23 @@ fun DuplicatesScreen(
                         modifier = Modifier.align(Alignment.Center).padding(48.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        CircularProgressIndicator(color = AccentColor, strokeWidth = 3.dp)
-                        Spacer(Modifier.height(24.dp))
                         Text("Analyse en cours...", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = TextColor)
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(16.dp))
                         Text(
-                            "Comparaison par blocs de pixels\npour détecter les photos similaires\net les versions rognées",
-                            color = MutedColor, fontSize = 13.sp, textAlign = TextAlign.Center,
-                            lineHeight = 18.sp
+                            if (scanTotal > 0) "$scannedCount / $scanTotal photos" else "Préparation...",
+                            fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AccentColor,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "$scanPercent % complété",
+                            fontSize = 14.sp, color = MutedColor,
+                            fontFamily = FontFamily.Monospace
                         )
                         Spacer(Modifier.height(24.dp))
                         LinearProgressIndicator(
-                            modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
+                            progress = (scanPercent / 100f).coerceIn(0f, 1f),
+                            modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
                             color = AccentColor,
                             trackColor = Surface2Color,
                         )

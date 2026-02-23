@@ -612,16 +612,43 @@ class VaultViewModel : ViewModel() {
     private val _scannedCount = MutableStateFlow(0)
     val scannedCount: StateFlow<Int> = _scannedCount
 
+    private val _scanTotal = MutableStateFlow(0)
+    val scanTotal: StateFlow<Int> = _scanTotal
+
+    private val _scanPercent = MutableStateFlow(0)
+    val scanPercent: StateFlow<Int> = _scanPercent
+
     fun scanDuplicates(albumId: String? = null) {
         viewModelScope.launch(Dispatchers.IO) {
+            Log.d("Doublon", "A: scanDuplicates appelé albumId=$albumId")
             _scanning.value = true
             _duplicateGroups.value = emptyList()
             _scannedCount.value = 0
+            _scanTotal.value = 0
+            _scanPercent.value = 0
             try {
-                val result = ApiService.scanDuplicates(albumId)
-                _duplicateGroups.value = result.groups
+                Log.d("Doublon", "B: getPhotoCount demande...")
+                try {
+                    val total = ApiService.getPhotoCount(albumId)
+                    Log.d("Doublon", "C: getPhotoCount retourne total=$total")
+                    _scanTotal.value = total
+                } catch (e: Exception) {
+                    Log.w("Doublon", "C: getPhotoCount échoué (404?), on continue: ${e.message}")
+                    _scanTotal.value = 0
+                }
+                Log.d("Doublon", "D: scanDuplicatesSync démarre (peut prendre plusieurs min)...")
+                val result = ApiService.scanDuplicatesSync(albumId)
+                Log.d("Doublon", "E: scanDuplicatesSync terminé scanned=${result.scanned} groups=${result.groups.size}")
                 _scannedCount.value = result.scanned
+                if (_scanTotal.value == 0) _scanTotal.value = result.scanned
+                _scanPercent.value = 100
+                _duplicateGroups.value = result.groups
+                result.groups.forEachIndexed { i, g ->
+                    Log.d("Doublon", "F: groupe $i = ${g.size} photos: ${g.map { it.filename }.take(3)}")
+                }
+                Log.d("Doublon", "Z: scan terminé OK")
             } catch (e: Exception) {
+                Log.e("Doublon", "Z: ERREUR", e)
                 _error.value = "Erreur scan: ${e.message}"
             }
             _scanning.value = false
@@ -642,6 +669,8 @@ class VaultViewModel : ViewModel() {
             _photos.value = _photos.value.filter { p -> toDelete.none { it.id == p.id } }
             _duplicateGroups.value = emptyList()
             _scannedCount.value = 0
+            _scanTotal.value = 0
+            _scanPercent.value = 0
             _scanning.value = false
         }
     }

@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-import sqlite3, os, shutil, hashlib, uuid, json
+import sqlite3, os, shutil, hashlib, uuid, json, threading
 from datetime import datetime
 from pathlib import Path
 from PIL import Image
@@ -181,26 +181,21 @@ def are_crop_similar(ch1, ch2) -> bool:
                     best_j = j
             except Exception:
                 pass
-        if best_diff <= 10 and best_j >= 0:
+        if best_diff <= 14 and best_j >= 0:
             matched += 1
             used.add(best_j)
 
-    needed = max(1, int(len(small) * 0.15))
+    needed = max(1, int(len(small) * 0.10))
     return matched >= needed
 
-def are_resize_similar(path1: Path, path2: Path, threshold: int = 12) -> bool:
-    """Resize both images to same small size and compare phash — catches aggressive crops."""
+def compute_resize_hash(image_path: Path):
     if imagehash is None:
-        return False
+        return None
     try:
-        img1 = Image.open(path1).resize((128, 128)).convert("L")
-        img2 = Image.open(path2).resize((128, 128)).convert("L")
-        h1 = imagehash.phash(img1, hash_size=16)
-        h2 = imagehash.phash(img2, hash_size=16)
-        diff = h1 - h2
-        return diff <= threshold
+        img = Image.open(image_path).resize((128, 128)).convert("L")
+        return imagehash.phash(img, hash_size=16)
     except Exception:
-        return False
+        return None
 
 def is_duplicate(new_phash: str, threshold: int = 5):
     if not new_phash or imagehash is None:
@@ -510,75 +505,149 @@ async def upload_photo(file: UploadFile = File(...), album_id: str = None):
         "duplicate_of": duplicate_of
     }
 
+scan_progress = {}
+import sys
+def _log(msg):
+    print(f"[Doublon] {msg}", flush=True)
+    sys.stdout.flush()
+
+def _run_scan(job_id: str, album_id):
+    try:
+        _log("A: _run_scan démarré")
+        db = get_db()
+        if album_id:
+            rows = db.execute("SELECT * FROM photos WHERE album_id=? AND media_type='image'", (album_id,)).fetchall()
+        else:
+            rows = db.execute("SELECT * FROM photos WHERE media_type='image'").fetchall()
+        db.close()
+        photos = [dict(r) for r in rows]
+        total = len(photos)
+        scan_progress[job_id]["total"] = total
+        _log(f"B: total={total} photos, imagehash={'OK' if imagehash else 'NON'}")
+
+        if not imagehash or total < 2:
+            scan_progress[job_id].update(done=True, groups=[], scanned=total)
+            return
+
+        _log("C: calcul des hash (crop + resize)...")
+        crop_cache = {}
+        resize_cache = {}
+        for i, p in enumerate(photos):
+            path = VAULT_DIR / p["filename"]
+            if path.exists():
+                ch = compute_crop_hash(path)
+                if ch is not None:
+                    crop_cache[p["id"]] = ch
+                rh = compute_resize_hash(path)
+                if rh is not None:
+                    resize_cache[p["id"]] = rh
+            scan_progress[job_id]["scanned"] = i + 1
+            scan_progress[job_id]["percent"] = min(30, int((i + 1) / total * 30))
+
+        _log(f"D: crop_cache={len(crop_cache)} resize_cache={len(resize_cache)}")
+        total_pairs = total * (total - 1) // 2 if total > 1 else 0
+        _log(f"E: comparaison de {total_pairs} paires...")
+        pairs_done = 0
+        used = set()
+        groups = []
+
+        for i, p1 in enumerate(photos):
+            if p1["id"] in used:
+                continue
+            group = [p1]
+            used.add(p1["id"])
+            for j in range(i + 1, len(photos)):
+                p2 = photos[j]
+                if p2["id"] in used:
+                    continue
+
+                similar = False
+                if p1.get("phash") and p2.get("phash"):
+                    try:
+                        diff = imagehash.hex_to_hash(p1["phash"]) - imagehash.hex_to_hash(p2["phash"])
+                        if diff <= 6:
+                            similar = True
+                    except Exception:
+                        pass
+
+                if not similar and p1["id"] in crop_cache and p2["id"] in crop_cache:
+                    similar = are_crop_similar(crop_cache[p1["id"]], crop_cache[p2["id"]])
+
+                if not similar and p1["id"] in resize_cache and p2["id"] in resize_cache:
+                    try:
+                        diff = resize_cache[p1["id"]] - resize_cache[p2["id"]]
+                        similar = diff <= 18
+                    except Exception:
+                        pass
+
+                if similar:
+                    group.append(p2)
+                    used.add(p2["id"])
+                    if len(group) == 2:
+                        _log(f"  MATCH phash/crop/resize: {p1.get('filename')} ~ {p2.get('filename')}")
+
+                pairs_done += 1
+                if pairs_done % 500 == 0:
+                    pct = 30 + int(pairs_done / total_pairs * 70) if total_pairs else 100
+                    scan_progress[job_id]["percent"] = min(99, pct)
+
+            if len(group) > 1:
+                for g in group:
+                    g["url"] = f"/api/vault/photo/{g['filename']}"
+                    thumb = g.get("thumbnail_filename")
+                    g["thumbnail_url"] = f"/api/vault/photo/{thumb}" if thumb else g["url"]
+                groups.append(group)
+
+        _log(f"F: terminé. groupes={len(groups)} (total photos en doublon={sum(len(g) for g in groups)})")
+        scan_progress[job_id].update(done=True, groups=groups, scanned=total, percent=100)
+    except Exception as e:
+        _log(f"Z: ERREUR {e}")
+        scan_progress[job_id]["error"] = str(e)
+        scan_progress[job_id]["done"] = True
+
 @app.post("/api/vault/scan-duplicates")
-def scan_duplicates(album_id: str = None):
-    """Deep scan: compares photos using global phash + block-level hashing (crop-resistant)."""
+def start_scan(album_id: str = None):
     db = get_db()
     if album_id:
-        rows = db.execute("SELECT * FROM photos WHERE album_id=? AND media_type='image'", (album_id,)).fetchall()
+        total = db.execute("SELECT COUNT(*) FROM photos WHERE album_id=? AND media_type='image'", (album_id,)).fetchone()[0]
     else:
-        rows = db.execute("SELECT * FROM photos WHERE media_type='image'").fetchall()
+        total = db.execute("SELECT COUNT(*) FROM photos WHERE media_type='image'").fetchone()[0]
     db.close()
+    job_id = str(uuid.uuid4())
+    scan_progress[job_id] = {"scanned": 0, "total": total, "percent": 0, "done": False, "groups": [], "error": None}
+    threading.Thread(target=_run_scan, args=(job_id, album_id), daemon=True).start()
+    return {"job_id": job_id, "total": total}
 
-    photos = [dict(r) for r in rows]
-    if not imagehash or len(photos) < 2:
-        return {"groups": [], "scanned": 0}
+@app.get("/api/vault/scan-duplicates/status")
+def scan_status(job_id: str):
+    if job_id not in scan_progress:
+        raise HTTPException(404, "Job not found")
+    return scan_progress[job_id]
 
-    # Pre-compute crop-resistant hashes for crop detection
-    crop_cache = {}
-    for p in photos:
-        path = VAULT_DIR / p["filename"]
-        if path.exists():
-            ch = compute_crop_hash(path)
-            if ch is not None:
-                crop_cache[p["id"]] = ch
+@app.get("/api/vault/photo-count")
+def photo_count(album_id: str = None):
+    db = get_db()
+    if album_id:
+        n = db.execute("SELECT COUNT(*) FROM photos WHERE album_id=? AND media_type='image'", (album_id,)).fetchone()[0]
+    else:
+        n = db.execute("SELECT COUNT(*) FROM photos WHERE media_type='image'").fetchone()[0]
+    db.close()
+    return {"count": n}
 
-    used = set()
-    groups = []
-    for i, p1 in enumerate(photos):
-        if p1["id"] in used:
-            continue
-        group = [p1]
-        used.add(p1["id"])
-        for j in range(i + 1, len(photos)):
-            p2 = photos[j]
-            if p2["id"] in used:
-                continue
-
-            similar = False
-
-            # Check 1: Global phash (very strict — nearly identical photos)
-            if p1.get("phash") and p2.get("phash"):
-                try:
-                    diff = imagehash.hex_to_hash(p1["phash"]) - imagehash.hex_to_hash(p2["phash"])
-                    if diff <= 4:
-                        similar = True
-                except Exception:
-                    pass
-
-            # Check 2: crop_resistant_hash (segment comparison)
-            if not similar and p1["id"] in crop_cache and p2["id"] in crop_cache:
-                similar = are_crop_similar(crop_cache[p1["id"]], crop_cache[p2["id"]])
-
-            # Check 3: resize both to same size and compare (catches aggressive crops)
-            if not similar:
-                path1 = VAULT_DIR / p1["filename"]
-                path2 = VAULT_DIR / p2["filename"]
-                if path1.exists() and path2.exists():
-                    similar = are_resize_similar(path1, path2)
-
-            if similar:
-                group.append(p2)
-                used.add(p2["id"])
-
-        if len(group) > 1:
-            for g in group:
-                g["url"] = f"/api/vault/photo/{g['filename']}"
-                thumb = g.get("thumbnail_filename")
-                g["thumbnail_url"] = f"/api/vault/photo/{thumb}" if thumb else g["url"]
-            groups.append(group)
-
-    return {"groups": groups, "scanned": len(photos)}
+@app.post("/api/vault/scan-duplicates-sync")
+def scan_duplicates_sync(album_id: str = None):
+    """Version synchrone: une seule requête, retourne le résultat complet."""
+    _log("A: scan-duplicates-sync appelé")
+    db = get_db()
+    if album_id:
+        total = db.execute("SELECT COUNT(*) FROM photos WHERE album_id=? AND media_type='image'", (album_id,)).fetchone()[0]
+    else:
+        total = db.execute("SELECT COUNT(*) FROM photos WHERE media_type='image'").fetchone()[0]
+    db.close()
+    scan_progress["_sync"] = {"scanned": 0, "total": total, "percent": 0, "done": False, "groups": [], "error": None}
+    _run_scan("_sync", album_id)
+    s = scan_progress.pop("_sync", {})
+    return {"groups": s.get("groups", []), "scanned": s.get("scanned", 0)}
 
 @app.get("/api/vault/photo/{filename}")
 def get_photo(filename: str):
