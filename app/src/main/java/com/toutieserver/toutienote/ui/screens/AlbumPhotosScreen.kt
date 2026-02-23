@@ -27,6 +27,7 @@ import sh.calvin.reorderable.rememberReorderableLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.CheckBoxOutlineBlank
 import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -45,6 +46,7 @@ import com.toutieserver.toutienote.ui.components.PhotoCard
 import androidx.compose.material.icons.filled.DragIndicator
 import com.toutieserver.toutienote.ui.theme.*
 import com.toutieserver.toutienote.viewmodels.VaultViewModel
+import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
@@ -86,8 +88,13 @@ fun AlbumPhotosScreen(
     val error by vm.error.collectAsState()
 
     var showDeleteDialog by remember { mutableStateOf<Photo?>(null) }
+    var showDeleteSelectedDialog by remember { mutableStateOf(false) }
     var showOptionsSheet by remember { mutableStateOf<Photo?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    var isSelectionMode by remember { mutableStateOf(false) }
+    val selectedIds = remember { mutableStateSetOf<String>() }
+    var showMenu by remember { mutableStateOf(false) }
 
     val pendingDeletions by vm.pendingGalleryDeletions.collectAsState()
     val deleteLauncher = rememberLauncherForActivityResult(
@@ -163,6 +170,31 @@ fun AlbumPhotosScreen(
             snackbarHostState.showSnackbar("$dupeCount doublon(s) détecté(s) — utilisez l'outil Doublons pour nettoyer")
             vm.clearDuplicateCount()
         }
+    }
+
+    if (showDeleteSelectedDialog) {
+        val count = selectedIds.size
+        AlertDialog(
+            onDismissRequest = { showDeleteSelectedDialog = false },
+            containerColor = SurfaceColor,
+            icon = { Icon(Icons.Default.Warning, null, tint = DangerColor, modifier = Modifier.size(32.dp)) },
+            title = { Text("Supprimer $count photo(s)?", fontWeight = FontWeight.SemiBold) },
+            text = { Text("Elles seront définitivement supprimées.", color = MutedColor, fontSize = 14.sp) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        photos.filter { it.id in selectedIds }.forEach { vm.deletePhoto(it.filename) }
+                        selectedIds.clear()
+                        isSelectionMode = false
+                        showDeleteSelectedDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = DangerColor)
+                ) { Text("Supprimer") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteSelectedDialog = false }) { Text("Annuler", color = MutedColor) }
+            }
+        )
     }
 
     showDeleteDialog?.let { photo ->
@@ -247,25 +279,109 @@ fun AlbumPhotosScreen(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceColor),
                 actions = {
-                    if (photos.size >= 2) {
-                        IconButton(onClick = onDuplicates) {
-                            Icon(Icons.Default.ContentCopy, "Doublons", tint = AccentColor)
+                    // Gauche : mode sélection + Tout sélectionner
+                    IconButton(
+                        onClick = {
+                            isSelectionMode = !isSelectionMode
+                            if (!isSelectionMode) selectedIds.clear()
                         }
-                        IconButton(onClick = { onSlideshow(photos) }) {
-                            Icon(Icons.Default.Slideshow, "Slideshow", tint = AccentColor)
+                    ) {
+                        Icon(
+                            if (isSelectionMode) Icons.Default.CheckBox else Icons.Outlined.CheckBoxOutlineBlank,
+                            contentDescription = if (isSelectionMode) "Quitter la sélection" else "Sélectionner",
+                            tint = AccentColor
+                        )
+                    }
+                    if (isSelectionMode) {
+                        TextButton(onClick = {
+                            if (selectedIds.size == photos.size) selectedIds.clear()
+                            else selectedIds.addAll(photos.map { it.id })
+                        }) {
+                            Text(
+                                if (selectedIds.size == photos.size) "Tout désélectionner" else "Tout sélectionner",
+                                fontSize = 12.sp,
+                                color = AccentColor
+                            )
                         }
                     }
-                    IconButton(onClick = ::takePhoto) {
-                        Icon(Icons.Default.CameraAlt, "Photo", tint = AccentColor)
-                    }
+                    // Centre : ajout photo
                     IconButton(onClick = ::pickPhotos) {
-                        Icon(Icons.Default.AddPhotoAlternate, "Importer", tint = AccentColor)
+                        Icon(Icons.Default.AddPhotoAlternate, "Ajouter des photos", tint = AccentColor)
+                    }
+                    // Droite : menu 3 points
+                    Box {
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(Icons.Default.MoreVert, "Menu", tint = AccentColor)
+                        }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Appareil photo") },
+                                onClick = { takePhoto(); showMenu = false },
+                                leadingIcon = { Icon(Icons.Default.CameraAlt, null, tint = AccentColor) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Lecture") },
+                                onClick = { onSlideshow(photos); showMenu = false },
+                                leadingIcon = { Icon(Icons.Default.Slideshow, null, tint = AccentColor) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Scan de doublons") },
+                                onClick = { onDuplicates(); showMenu = false },
+                                leadingIcon = { Icon(Icons.Default.ContentCopy, null, tint = AccentColor) }
+                            )
+                        }
                     }
                 }
             )
         }
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+            AnimatedVisibility(
+                selectedIds.isNotEmpty(),
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.align(Alignment.BottomCenter)
+            ) {
+                Surface(
+                    color = SurfaceColor,
+                    shadowElevation = 8.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "${selectedIds.size} sélectionnée(s)",
+                            fontSize = 14.sp,
+                            color = MutedColor
+                        )
+                        TextButton(onClick = {
+                            photos.filter { it.id in selectedIds }.forEach {
+                                vm.exportToGallery(it, context.contentResolver)
+                            }
+                            scope.launch { snackbarHostState.showSnackbar("Export terminé") }
+                            selectedIds.clear()
+                            isSelectionMode = false
+                        }) {
+                            Icon(Icons.Default.SaveAlt, null, modifier = Modifier.size(20.dp), tint = AccentColor)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Exporter", color = AccentColor)
+                        }
+                        TextButton(onClick = { showDeleteSelectedDialog = true }) {
+                            Icon(Icons.Default.Delete, null, modifier = Modifier.size(20.dp), tint = DangerColor)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Supprimer", color = DangerColor)
+                        }
+                    }
+                }
+            }
             AnimatedVisibility(uploading, enter = fadeIn(), exit = fadeOut()) {
                 LinearProgressIndicator(
                     color = AccentColor,
@@ -325,7 +441,12 @@ fun AlbumPhotosScreen(
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(3),
                         state = lazyGridState,
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                        contentPadding = PaddingValues(
+                            start = 4.dp,
+                            top = 8.dp,
+                            end = 4.dp,
+                            bottom = if (selectedIds.isNotEmpty()) 72.dp else 8.dp
+                        ),
                         horizontalArrangement = Arrangement.spacedBy(2.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                         modifier = Modifier.fillMaxSize()
@@ -335,27 +456,38 @@ fun AlbumPhotosScreen(
                                 Box(modifier = Modifier.fillMaxWidth()) {
                                     PhotoCard(
                                         photo = photo,
-                                        onClick = { onPhotoClick(photo) },
-                                        onLongClick = { showOptionsSheet = photo },
-                                        isDragging = isDragging
+                                        onClick = {
+                                            if (isSelectionMode) {
+                                                if (photo.id in selectedIds) selectedIds.remove(photo.id)
+                                                else selectedIds.add(photo.id)
+                                            } else {
+                                                onPhotoClick(photo)
+                                            }
+                                        },
+                                        onLongClick = { if (!isSelectionMode) showOptionsSheet = photo },
+                                        isDragging = isDragging,
+                                        isSelectionMode = isSelectionMode,
+                                        isSelected = photo.id in selectedIds
                                     )
-                                    IconButton(
-                                        modifier = Modifier
-                                            .align(Alignment.TopStart)
-                                            .size(32.dp)
-                                            .draggableHandle(
-                                                onDragStarted = {
-                                                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                }
-                                            ),
-                                        onClick = {}
-                                    ) {
-                                        Icon(
-                                            Icons.Default.DragIndicator,
-                                            contentDescription = "Réordonner",
-                                            tint = Color.White,
-                                            modifier = Modifier.size(20.dp)
-                                        )
+                                    if (!isSelectionMode) {
+                                        IconButton(
+                                            modifier = Modifier
+                                                .align(Alignment.TopStart)
+                                                .size(32.dp)
+                                                .draggableHandle(
+                                                    onDragStarted = {
+                                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                    }
+                                                ),
+                                            onClick = {}
+                                        ) {
+                                            Icon(
+                                                Icons.Default.DragIndicator,
+                                                contentDescription = "Réordonner",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }

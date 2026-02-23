@@ -54,10 +54,8 @@ def init_db():
     """)
     db.execute("""
         CREATE TABLE IF NOT EXISTS vault_config (
-            user_id TEXT NOT NULL,
-            key     TEXT NOT NULL,
-            value   TEXT,
-            PRIMARY KEY (user_id, key)
+            key   TEXT PRIMARY KEY,
+            value TEXT
         )
     """)
     db.execute("""
@@ -69,6 +67,11 @@ def init_db():
             created_at    TEXT NOT NULL
         )
     """)
+    # Migration: vault_config key "vault_pin" -> "default:vault_pin" pour multi-user
+    try:
+        db.execute("UPDATE vault_config SET key = 'default:vault_pin' WHERE key = 'vault_pin'")
+    except Exception:
+        pass
     db.execute("""
         CREATE TABLE IF NOT EXISTS albums (
             id         TEXT PRIMARY KEY,
@@ -95,6 +98,8 @@ def init_db():
     migrations = [
         ("albums", "pin_hash", "TEXT"),
         ("albums", "sort_order", "INTEGER DEFAULT 0"),
+        ("albums", "user_id", "TEXT"),
+        ("notes", "user_id", "TEXT"),
         ("photos", "thumbnail_filename", "TEXT"),
         ("photos", "media_type", "TEXT DEFAULT 'image'"),
         ("photos", "phash", "TEXT"),
@@ -109,6 +114,20 @@ def init_db():
 
     db.execute("UPDATE photos SET favorite=0 WHERE favorite IS NULL")
     db.commit()
+    # Migration: default user pour données existantes (après ajout user_id)
+    try:
+        default_id = "default"
+        default_token = "default"
+        now = datetime.utcnow().isoformat()
+        db.execute(
+            "INSERT OR IGNORE INTO users (id, username, password_hash, token, created_at) VALUES (?,?,?,?,?)",
+            (default_id, "default", hashlib.sha256("default".encode()).hexdigest(), default_token, now)
+        )
+        db.execute("UPDATE notes SET user_id = ? WHERE user_id IS NULL OR user_id = ''", (default_id,))
+        db.execute("UPDATE albums SET user_id = ? WHERE user_id IS NULL OR user_id = ''", (default_id,))
+        db.commit()
+    except Exception:
+        pass
     db.close()
 
 init_db()
@@ -275,53 +294,119 @@ def is_duplicate(new_phash: str, threshold: int = 5):
                 pass
     return None
 
-def get_config(key: str):
+def _config_key(user_id: str, key: str) -> str:
+    return f"{user_id}:{key}"
+
+def get_config(user_id: str, key: str):
     db = get_db()
-    row = db.execute("SELECT value FROM vault_config WHERE key=?", (key,)).fetchone()
+    row = db.execute("SELECT value FROM vault_config WHERE key=?", (_config_key(user_id, key),)).fetchone()
     db.close()
     return row["value"] if row else None
 
-def set_config(key: str, value: str):
+def set_config(user_id: str, key: str, value: str):
     db = get_db()
-    db.execute("INSERT OR REPLACE INTO vault_config(key,value) VALUES(?,?)", (key, value))
+    db.execute("INSERT OR REPLACE INTO vault_config(key,value) VALUES(?,?)", (_config_key(user_id, key), value))
     db.commit()
     db.close()
+
+def hash_password(pw: str) -> str:
+    return hashlib.sha256(pw.encode()).hexdigest()
+
+def get_user_by_token(token: str):
+    if not token:
+        return None
+    db = get_db()
+    row = db.execute("SELECT * FROM users WHERE token=?", (token,)).fetchone()
+    db.close()
+    return dict(row) if row else None
+
+async def get_current_user(authorization: str = Header(None)):
+    token = None
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:].strip()
+    if not token:
+        raise HTTPException(401, "Token requis")
+    user = get_user_by_token(token)
+    if not user:
+        raise HTTPException(401, "Token invalide")
+    return user
+
+# ══════════════════════════════════════════════════════════════════════════════
+# AUTH
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/auth/register")
+def register(data: AuthRegister):
+    if len(data.username) < 2:
+        raise HTTPException(400, "Nom d'utilisateur trop court")
+    if len(data.password) < 4:
+        raise HTTPException(400, "Mot de passe trop court (min 4 caractères)")
+    db = get_db()
+    existing = db.execute("SELECT id FROM users WHERE username=?", (data.username.lower(),)).fetchone()
+    if existing:
+        db.close()
+        raise HTTPException(400, "Ce nom d'utilisateur existe déjà")
+    uid = str(uuid.uuid4())
+    token = str(uuid.uuid4())
+    now = datetime.utcnow().isoformat()
+    db.execute(
+        "INSERT INTO users (id, username, password_hash, token, created_at) VALUES (?,?,?,?,?)",
+        (uid, data.username.lower(), hash_password(data.password), token, now)
+    )
+    db.commit()
+    db.close()
+    return {"token": token, "user_id": uid, "username": data.username}
+
+@app.post("/api/auth/login")
+def login(data: AuthLogin):
+    db = get_db()
+    row = db.execute(
+        "SELECT id, username, token FROM users WHERE username=? AND password_hash=?",
+        (data.username.lower(), hash_password(data.password))
+    ).fetchone()
+    if not row:
+        db.close()
+        raise HTTPException(401, "Identifiants incorrects")
+    token = str(uuid.uuid4())
+    db.execute("UPDATE users SET token=? WHERE id=?", (token, row["id"]))
+    db.commit()
+    db.close()
+    return {"token": token, "user_id": row["id"], "username": row["username"]}
 
 # ══════════════════════════════════════════════════════════════════════════════
 # NOTES
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/api/notes")
-def list_notes():
+def list_notes(user: dict = Depends(get_current_user)):
     db = get_db()
-    rows = db.execute("SELECT * FROM notes ORDER BY updated_at DESC").fetchall()
+    rows = db.execute("SELECT * FROM notes WHERE user_id=? OR user_id IS NULL ORDER BY updated_at DESC", (user["id"],)).fetchall()
     db.close()
     return [dict(r) for r in rows]
 
 @app.post("/api/notes")
-def create_note(note: NoteIn):
+def create_note(note: NoteIn, user: dict = Depends(get_current_user)):
     db = get_db()
     nid = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
-    db.execute("INSERT INTO notes VALUES(?,?,?,?)", (nid, note.title, note.content, now))
+    db.execute("INSERT INTO notes (id, title, content, updated_at, user_id) VALUES(?,?,?,?,?)", (nid, note.title, note.content, now, user["id"]))
     db.commit()
     db.close()
     return {"id": nid, "title": note.title, "content": note.content, "updated_at": now}
 
 @app.put("/api/notes/{note_id}")
-def update_note(note_id: str, note: NoteIn):
+def update_note(note_id: str, note: NoteIn, user: dict = Depends(get_current_user)):
     db = get_db()
     now = datetime.utcnow().isoformat()
-    db.execute("UPDATE notes SET title=?, content=?, updated_at=? WHERE id=?",
-               (note.title, note.content, now, note_id))
+    db.execute("UPDATE notes SET title=?, content=?, updated_at=? WHERE id=? AND (user_id=? OR user_id IS NULL)", (note.title, note.content, now, note_id, user["id"]))
     db.commit()
     db.close()
     return {"id": note_id, "updated_at": now}
 
 @app.delete("/api/notes/{note_id}")
-def delete_note(note_id: str):
+def delete_note(note_id: str, user: dict = Depends(get_current_user)):
     db = get_db()
-    db.execute("DELETE FROM notes WHERE id=?", (note_id,))
+    db.execute("DELETE FROM notes WHERE id=? AND (user_id=? OR user_id IS NULL)", (note_id, user["id"]))
     db.commit()
     db.close()
     return {"ok": True}
@@ -331,21 +416,21 @@ def delete_note(note_id: str):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/api/vault/pin-exists")
-def pin_exists():
-    return {"exists": get_config("vault_pin") is not None}
+def pin_exists(user: dict = Depends(get_current_user)):
+    return {"exists": get_config(user["id"], "vault_pin") is not None}
 
 @app.post("/api/vault/pin-setup")
-def setup_pin(data: PinSetup):
+def setup_pin(data: PinSetup, user: dict = Depends(get_current_user)):
     if len(data.pin) != 4 or not data.pin.isdigit():
         raise HTTPException(400, "PIN doit être 4 chiffres")
-    if get_config("vault_pin") is not None:
+    if get_config(user["id"], "vault_pin") is not None:
         raise HTTPException(400, "PIN déjà configuré")
-    set_config("vault_pin", hash_pin(data.pin))
+    set_config(user["id"], "vault_pin", hash_pin(data.pin))
     return {"ok": True}
 
 @app.post("/api/vault/verify")
-def verify_pin(data: PinVerify):
-    stored = get_config("vault_pin")
+def verify_pin(data: PinVerify, user: dict = Depends(get_current_user)):
+    stored = get_config(user["id"], "vault_pin")
     if stored is None:
         raise HTTPException(400, "PIN pas encore configuré")
     if hash_pin(data.pin) != stored:
@@ -353,23 +438,23 @@ def verify_pin(data: PinVerify):
     return {"ok": True}
 
 @app.post("/api/vault/reset-pin")
-def reset_pin(data: PinVerify):
-    stored = get_config("vault_pin")
+def reset_pin(data: PinVerify, user: dict = Depends(get_current_user)):
+    stored = get_config(user["id"], "vault_pin")
     if stored and hash_pin(data.pin) != stored:
         raise HTTPException(401, "PIN incorrect")
-    set_config("vault_pin", None)
+    set_config(user["id"], "vault_pin", None)
     return {"ok": True}
 
 @app.post("/api/vault/change-pin")
-def change_pin(data: PinChange):
-    stored = get_config("vault_pin")
+def change_pin(data: PinChange, user: dict = Depends(get_current_user)):
+    stored = get_config(user["id"], "vault_pin")
     if stored is None:
         raise HTTPException(400, "PIN pas encore configuré")
     if hash_pin(data.old_pin) != stored:
         raise HTTPException(401, "PIN actuel incorrect")
     if len(data.new_pin) != 4 or not data.new_pin.isdigit():
         raise HTTPException(400, "Nouveau PIN doit être 4 chiffres")
-    set_config("vault_pin", hash_pin(data.new_pin))
+    set_config(user["id"], "vault_pin", hash_pin(data.new_pin))
     return {"ok": True}
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -377,9 +462,9 @@ def change_pin(data: PinChange):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/api/vault/albums")
-def list_albums():
+def list_albums(user: dict = Depends(get_current_user)):
     db = get_db()
-    rows = db.execute("SELECT * FROM albums ORDER BY sort_order ASC, created_at DESC").fetchall()
+    rows = db.execute("SELECT * FROM albums WHERE user_id=? OR user_id IS NULL ORDER BY sort_order ASC, created_at DESC", (user["id"],)).fetchall()
     db.close()
     albums = []
     for r in rows:
@@ -394,27 +479,27 @@ def list_albums():
     return albums
 
 @app.post("/api/vault/albums")
-def create_album(data: AlbumCreate):
+def create_album(data: AlbumCreate, user: dict = Depends(get_current_user)):
     db = get_db()
     album_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
-    db.execute("INSERT INTO albums (id, name, cover_url, created_at) VALUES(?,?,?,?)",
-               (album_id, data.name, None, now))
+    db.execute("INSERT INTO albums (id, name, cover_url, created_at, user_id) VALUES(?,?,?,?,?)",
+               (album_id, data.name, None, now, user["id"]))
     db.commit()
     db.close()
     return {"id": album_id, "name": data.name, "cover_url": None, "created_at": now, "photo_count": 0, "is_locked": False}
 
 @app.post("/api/vault/albums/{album_id}/lock")
-def lock_album(album_id: str, data: AlbumLock):
+def lock_album(album_id: str, data: AlbumLock, user: dict = Depends(get_current_user)):
     db = get_db()
     hashed = hash_pin(data.pin)
-    db.execute("UPDATE albums SET pin_hash=? WHERE id=?", (hashed, album_id))
+    db.execute("UPDATE albums SET pin_hash=? WHERE id=? AND (user_id=? OR user_id IS NULL)", (hashed, album_id, user["id"]))
     db.commit()
     db.close()
     return {"ok": True}
 
 @app.post("/api/vault/albums/{album_id}/verify-lock")
-def verify_album_lock(album_id: str, data: AlbumLock):
+def verify_album_lock(album_id: str, data: AlbumLock, user: dict = Depends(get_current_user)):
     db = get_db()
     row = db.execute("SELECT pin_hash FROM albums WHERE id=?", (album_id,)).fetchone()
     db.close()
@@ -425,7 +510,7 @@ def verify_album_lock(album_id: str, data: AlbumLock):
     return {"ok": True}
 
 @app.delete("/api/vault/albums/{album_id}")
-def delete_album(album_id: str):
+def delete_album(album_id: str, user: dict = Depends(get_current_user)):
     db = get_db()
     photos = db.execute("SELECT filename FROM photos WHERE album_id=?", (album_id,)).fetchall()
     for p in photos:
@@ -433,13 +518,13 @@ def delete_album(album_id: str):
         if path.exists():
             path.unlink()
     db.execute("DELETE FROM photos WHERE album_id=?", (album_id,))
-    db.execute("DELETE FROM albums WHERE id=?", (album_id,))
+    db.execute("DELETE FROM albums WHERE id=? AND (user_id=? OR user_id IS NULL)", (album_id, user["id"]))
     db.commit()
     db.close()
     return {"ok": True}
 
 @app.put("/api/vault/albums/reorder")
-def reorder_albums(data: AlbumReorder):
+def reorder_albums(data: AlbumReorder, user: dict = Depends(get_current_user)):
     db = get_db()
     for i, aid in enumerate(data.album_ids):
         db.execute("UPDATE albums SET sort_order=? WHERE id=?", (i, aid))
@@ -448,15 +533,15 @@ def reorder_albums(data: AlbumReorder):
     return {"ok": True}
 
 @app.put("/api/vault/albums/{album_id}")
-def rename_album(album_id: str, data: AlbumCreate):
+def rename_album(album_id: str, data: AlbumCreate, user: dict = Depends(get_current_user)):
     db = get_db()
-    db.execute("UPDATE albums SET name=? WHERE id=?", (data.name, album_id))
+    db.execute("UPDATE albums SET name=? WHERE id=? AND (user_id=? OR user_id IS NULL)", (data.name, album_id, user["id"]))
     db.commit()
     db.close()
     return {"ok": True}
 
 @app.post("/api/vault/albums/{album_id}/unlock")
-def unlock_album(album_id: str, data: AlbumLock):
+def unlock_album(album_id: str, data: AlbumLock, user: dict = Depends(get_current_user)):
     db = get_db()
     row = db.execute("SELECT pin_hash FROM albums WHERE id=?", (album_id,)).fetchone()
     if row and row["pin_hash"] and hash_pin(data.pin) != row["pin_hash"]:
@@ -468,9 +553,9 @@ def unlock_album(album_id: str, data: AlbumLock):
     return {"ok": True}
 
 @app.put("/api/vault/albums/{album_id}/cover")
-def update_album_cover(album_id: str, data: AlbumCoverUpdate):
+def update_album_cover(album_id: str, data: AlbumCoverUpdate, user: dict = Depends(get_current_user)):
     db = get_db()
-    db.execute("UPDATE albums SET cover_url=? WHERE id=?", (data.photo_url, album_id))
+    db.execute("UPDATE albums SET cover_url=? WHERE id=? AND (user_id=? OR user_id IS NULL)", (data.photo_url, album_id, user["id"]))
     db.commit()
     db.close()
     return {"ok": True}
@@ -480,7 +565,7 @@ def update_album_cover(album_id: str, data: AlbumCoverUpdate):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.put("/api/vault/albums/{album_id}/photos/reorder")
-def reorder_photos(album_id: str, data: PhotoReorder):
+def reorder_photos(album_id: str, data: PhotoReorder, user: dict = Depends(get_current_user)):
     db = get_db()
     for i, pid in enumerate(data.photo_ids):
         db.execute("UPDATE photos SET sort_order=? WHERE id=? AND album_id=?", (i, pid, album_id))
@@ -489,12 +574,22 @@ def reorder_photos(album_id: str, data: PhotoReorder):
     return {"ok": True}
 
 @app.get("/api/vault/photos")
-def list_photos(album_id: str = None):
+def list_photos(album_id: str = None, user: dict = Depends(get_current_user)):
     db = get_db()
     if album_id:
-        rows = db.execute("SELECT * FROM photos WHERE album_id=? ORDER BY COALESCE(favorite,0) DESC, sort_order ASC, created_at DESC", (album_id,)).fetchall()
+        rows = db.execute("""
+            SELECT p.* FROM photos p
+            JOIN albums a ON p.album_id = a.id
+            WHERE p.album_id=? AND (a.user_id=? OR a.user_id IS NULL)
+            ORDER BY COALESCE(p.favorite,0) DESC, p.sort_order ASC, p.created_at DESC
+        """, (album_id, user["id"])).fetchall()
     else:
-        rows = db.execute("SELECT * FROM photos ORDER BY COALESCE(favorite,0) DESC, sort_order ASC, created_at DESC").fetchall()
+        rows = db.execute("""
+            SELECT p.* FROM photos p
+            JOIN albums a ON p.album_id = a.id
+            WHERE a.user_id=? OR a.user_id IS NULL
+            ORDER BY COALESCE(p.favorite,0) DESC, p.sort_order ASC, p.created_at DESC
+        """, (user["id"],)).fetchall()
     db.close()
 
     photos = []
@@ -513,7 +608,13 @@ def list_photos(album_id: str = None):
     return photos
 
 @app.post("/api/vault/upload")
-async def upload_photo(file: UploadFile = File(...), album_id: str = None):
+async def upload_photo(file: UploadFile = File(...), album_id: str = None, user: dict = Depends(get_current_user)):
+    if album_id:
+        db = get_db()
+        album = db.execute("SELECT id FROM albums WHERE id=? AND (user_id=? OR user_id IS NULL)", (album_id, user["id"])).fetchone()
+        db.close()
+        if not album:
+            raise HTTPException(403, "Album introuvable")
     ext = Path(file.filename).suffix.lower()
     is_video = ext in [".mp4", ".mov", ".mkv"]
     if ext not in [".jpg", ".jpeg", ".png", ".webp"] and not is_video:

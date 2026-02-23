@@ -2,14 +2,17 @@ package com.toutieserver.toutienote.data.api
 
 import android.util.Log
 import com.toutieserver.toutienote.config.Config
+import com.toutieserver.toutienote.data.auth.AuthRepository
 import com.toutieserver.toutienote.data.models.Album
 import com.toutieserver.toutienote.data.models.Note
 import com.toutieserver.toutienote.data.models.Photo
+import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -17,7 +20,17 @@ import java.util.concurrent.TimeUnit
 
 object ApiService {
 
+    private val authInterceptor = Interceptor { chain ->
+        val token = AuthRepository.getToken()
+        val req = chain.request().newBuilder()
+        if (!token.isNullOrBlank()) {
+            req.addHeader("Authorization", "Bearer $token")
+        }
+        chain.proceed(req.build())
+    }
+
     private val client = OkHttpClient.Builder()
+        .addInterceptor(authInterceptor)
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
@@ -44,6 +57,27 @@ object ApiService {
 
     private fun optNullableString(obj: JSONObject, key: String): String? {
         return if (obj.isNull(key)) null else obj.optString(key)
+    }
+
+    // ── Auth ────────────────────────────────────────────────────
+    data class AuthResponse(val token: String, val user_id: String, val username: String)
+
+    fun register(username: String, password: String): AuthResponse {
+        val json = JSONObject().put("username", username).put("password", password).toString()
+        val req = okhttp3.Request.Builder().url("$base/api/auth/register")
+            .post(json.toRequestBody(JSON)).build()
+        val body = executeForBody(req)
+        val obj = JSONObject(body)
+        return AuthResponse(obj.getString("token"), obj.getString("user_id"), obj.getString("username"))
+    }
+
+    fun login(username: String, password: String): AuthResponse {
+        val json = JSONObject().put("username", username).put("password", password).toString()
+        val req = okhttp3.Request.Builder().url("$base/api/auth/login")
+            .post(json.toRequestBody(JSON)).build()
+        val body = executeForBody(req)
+        val obj = JSONObject(body)
+        return AuthResponse(obj.getString("token"), obj.getString("user_id"), obj.getString("username"))
     }
 
     // ── Notes ──────────────────────────────────────────────────

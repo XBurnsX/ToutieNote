@@ -7,12 +7,14 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.*
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.toutieserver.toutienote.data.auth.AuthRepository
 import com.toutieserver.toutienote.data.models.Album
 import com.toutieserver.toutienote.data.models.Photo
 import com.toutieserver.toutienote.ui.components.PinDialog
 import com.toutieserver.toutienote.ui.components.PinMode
 import com.toutieserver.toutienote.ui.screens.*
 import com.toutieserver.toutienote.ui.theme.ToutieNoteTheme
+import com.toutieserver.toutienote.viewmodels.AuthViewModel
 import com.toutieserver.toutienote.viewmodels.NotesViewModel
 import com.toutieserver.toutienote.viewmodels.VaultViewModel
 import java.io.File
@@ -34,12 +36,15 @@ sealed class Screen {
     data class Slideshow(val photos: List<Photo>, val album: Album) : Screen()
     data class Duplicates(val albumId: String?, val album: Album?) : Screen()
     data class GalleryPicker(val album: Album) : Screen()
+    object Login : Screen()
+    object Register : Screen()
 }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        AuthRepository.init(applicationContext)
         setContent {
             ToutieNoteTheme {
                 AppNavigation()
@@ -51,10 +56,13 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AppNavigation() {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val authVm: AuthViewModel = viewModel()
     val notesVm: NotesViewModel = viewModel()
     val vaultVm: VaultViewModel = viewModel()
 
-    var screen by remember { mutableStateOf<Screen>(Screen.Notes) }
+    var screen by remember { mutableStateOf<Screen>(
+        if (AuthRepository.isLoggedIn()) Screen.Notes else Screen.Login
+    ) }
     val unlockedAlbums = remember { mutableStateListOf<String>() }
     var pendingLockedAlbum by remember { mutableStateOf<Album?>(null) }
 
@@ -76,6 +84,16 @@ fun AppNavigation() {
     }
 
     when (val s = screen) {
+        is Screen.Login -> LoginScreen(
+            vm = authVm,
+            onLoginSuccess = { screen = Screen.Notes },
+            onRegisterClick = { screen = Screen.Register },
+        )
+        is Screen.Register -> RegisterScreen(
+            vm = authVm,
+            onRegisterSuccess = { screen = Screen.Notes },
+            onLoginClick = { screen = Screen.Login },
+        )
         is Screen.Notes -> NotesScreen(
             notesVm = notesVm,
             vaultVm = vaultVm,
@@ -94,6 +112,7 @@ fun AppNavigation() {
             BackHandler { screen = Screen.Notes }
             AlbumsListScreen(
                 vm = vaultVm,
+                onLogout = { screen = Screen.Login },
                 onAlbumClick = { album ->
                     if (album.isLocked && album.id !in unlockedAlbums) {
                         pendingLockedAlbum = album

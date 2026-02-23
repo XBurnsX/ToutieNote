@@ -6,6 +6,8 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.outlined.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.PlayCircleFilled
 import androidx.compose.material3.CircularProgressIndicator
@@ -37,6 +39,8 @@ fun PhotoCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     isDragging: Boolean = false,
+    isSelectionMode: Boolean = false,
+    isSelected: Boolean = false,
 ) {
     val elevation by androidx.compose.animation.core.animateDpAsState(
         if (isDragging) 8.dp else 0.dp,
@@ -111,6 +115,18 @@ fun PhotoCard(
                     .align(Alignment.TopEnd)
                     .padding(5.dp)
                     .size(18.dp)
+            )
+        }
+
+        if (isSelectionMode) {
+            Icon(
+                if (isSelected) Icons.Default.CheckBox else Icons.Outlined.CheckBoxOutlineBlank,
+                contentDescription = if (isSelected) "Sélectionné" else "Non sélectionné",
+                tint = if (isSelected) AccentColor else Color.White.copy(alpha = 0.8f),
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp)
+                    .size(24.dp)
             )
         }
     }

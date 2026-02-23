@@ -41,6 +41,7 @@ fun AlbumsListScreen(
     onAlbumClick: (Album) -> Unit,
     onDuplicates: () -> Unit = {},
     onBack: () -> Unit,
+    onLogout: () -> Unit = {},
 ) {
     val albums by vm.albums.collectAsState()
     val loading by vm.loading.collectAsState()
@@ -397,6 +398,14 @@ fun AlbumsListScreen(
                                 onClick = {
                                     showChangePinDialog = true
                                     showMenu = false
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Déconnexion", color = DangerColor) },
+                                onClick = {
+                                    com.toutieserver.toutienote.data.auth.AuthRepository.clearSession()
+                                    showMenu = false
+                                    onLogout()
                                 }
                             )
                         }
