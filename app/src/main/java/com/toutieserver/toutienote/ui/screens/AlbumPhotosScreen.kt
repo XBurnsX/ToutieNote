@@ -1,8 +1,11 @@
 package com.toutieserver.toutienote.ui.screens
 
 import android.Manifest
+import android.net.Uri
 import android.os.Build
+import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -59,11 +62,30 @@ fun AlbumPhotosScreen(
         error?.let { snackbarHostState.showSnackbar(it); vm.clearError() }
     }
 
+    val deleteRequestLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { /* Résultat ignoré, les photos seront supprimées si l'user confirme */ }
+
+    fun deleteFromGallery(uris: List<Uri>) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val pendingIntent = MediaStore.createDeleteRequest(context.contentResolver, uris)
+                deleteRequestLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
+            } catch (_: Exception) {
+                uris.forEach { try { context.contentResolver.delete(it, null, null) } catch (_: Exception) {} }
+            }
+        } else {
+            uris.forEach { try { context.contentResolver.delete(it, null, null) } catch (_: Exception) {} }
+        }
+    }
+
     val photoPickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.GetMultipleContents()
     ) { uris ->
         if (uris.isNotEmpty()) {
-            vm.uploadPhotosToAlbum(uris, album.id, context.contentResolver, context.cacheDir)
+            vm.uploadPhotosToAlbum(uris, album.id, context.contentResolver, context.cacheDir) { uploadedUris ->
+                deleteFromGallery(uploadedUris)
+            }
         }
     }
 

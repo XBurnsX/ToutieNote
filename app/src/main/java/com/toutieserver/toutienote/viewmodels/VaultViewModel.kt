@@ -123,10 +123,11 @@ class VaultViewModel : ViewModel() {
         }
     }
 
-    fun uploadPhotos(uris: List<Uri>, contentResolver: ContentResolver, cacheDir: File) {
+    fun uploadPhotos(uris: List<Uri>, contentResolver: ContentResolver, cacheDir: File, onDeleteFromGallery: ((List<Uri>) -> Unit)? = null) {
         viewModelScope.launch(Dispatchers.IO) {
             _uploading.value = true
             var uploaded = 0
+            val uploadedUris = mutableListOf<Uri>()
             for (uri in uris) {
                 try {
                     val filename = "vault_${System.currentTimeMillis()}.jpg"
@@ -135,8 +136,8 @@ class VaultViewModel : ViewModel() {
                         FileOutputStream(tempFile).use { output -> input.copyTo(output) }
                     }
                     ApiService.uploadPhoto(tempFile, filename, null)
-                    contentResolver.delete(uri, null, null)
                     tempFile.delete()
+                    uploadedUris.add(uri)
                     uploaded++
                 } catch (e: Exception) {
                     _error.value = "Erreur upload: ${e.message}"
@@ -145,13 +146,19 @@ class VaultViewModel : ViewModel() {
             _uploading.value = false
             if (uploaded > 0) _message.value = "$uploaded photo(s) ajoutée(s) ✓"
             loadPhotos()
+            if (uploadedUris.isNotEmpty()) {
+                viewModelScope.launch(Dispatchers.Main) {
+                    onDeleteFromGallery?.invoke(uploadedUris)
+                }
+            }
         }
     }
 
-    fun uploadPhotosToAlbum(uris: List<Uri>, albumId: String, contentResolver: ContentResolver, cacheDir: File) {
+    fun uploadPhotosToAlbum(uris: List<Uri>, albumId: String, contentResolver: ContentResolver, cacheDir: File, onDeleteFromGallery: ((List<Uri>) -> Unit)? = null) {
         viewModelScope.launch(Dispatchers.IO) {
             _uploading.value = true
             var uploaded = 0
+            val uploadedUris = mutableListOf<Uri>()
             for (uri in uris) {
                 try {
                     val filename = "vault_${System.currentTimeMillis()}.jpg"
@@ -160,8 +167,8 @@ class VaultViewModel : ViewModel() {
                         FileOutputStream(tempFile).use { output -> input.copyTo(output) }
                     }
                     ApiService.uploadPhoto(tempFile, filename, albumId)
-                    contentResolver.delete(uri, null, null)
                     tempFile.delete()
+                    uploadedUris.add(uri)
                     uploaded++
                 } catch (e: Exception) {
                     _error.value = "Erreur upload: ${e.message}"
@@ -170,6 +177,11 @@ class VaultViewModel : ViewModel() {
             _uploading.value = false
             if (uploaded > 0) _message.value = "$uploaded photo(s) ajoutée(s) ✓"
             loadPhotosForAlbum(albumId)
+            if (uploadedUris.isNotEmpty()) {
+                viewModelScope.launch(Dispatchers.Main) {
+                    onDeleteFromGallery?.invoke(uploadedUris)
+                }
+            }
         }
     }
 

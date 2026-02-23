@@ -62,10 +62,10 @@ fun PhotoEditScreen(
     val error   by vm.error.collectAsState()
 
     var saving by remember { mutableStateOf(false) }
-    var imageUrl by remember(photo.id, localImageFile) {
+    var imageModel: Any by remember(photo.id, localImageFile) {
         mutableStateOf(
-            if (localImageFile != null && localImageFile.exists()) localImageFile.absolutePath
-            else ApiService.photoUrl(photo.url) + "?t=${System.currentTimeMillis()}"
+            if (localImageFile != null && localImageFile.exists()) localImageFile as Any
+            else ApiService.photoUrl(photo.url) + "?t=${System.currentTimeMillis()}" as Any
         )
     }
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -85,7 +85,7 @@ fun PhotoEditScreen(
 
     LaunchedEffect(message) {
         message?.let {
-            if (localImageFile == null) imageUrl = ApiService.photoUrl(photo.url) + "?t=${System.currentTimeMillis()}"
+            if (localImageFile == null) imageModel = ApiService.photoUrl(photo.url) + "?t=${System.currentTimeMillis()}"
             saving = false
             snackbarHostState.showSnackbar(it)
             vm.clearMessage()
@@ -103,8 +103,9 @@ fun PhotoEditScreen(
                     BitmapFactory.decodeFile(localImageFile.absolutePath)
                         ?: throw java.io.IOException("Image invalide")
                 } else {
+                    val url = imageModel as? String ?: ApiService.photoUrl(photo.url)
                     val client = OkHttpClient()
-                    val req = Request.Builder().url(imageUrl).build()
+                    val req = Request.Builder().url(url).build()
                     val response = client.newCall(req).execute()
                     if (!response.isSuccessful) throw java.io.IOException("HTTP ${response.code}")
                     val bytes = response.body?.bytes() ?: throw java.io.IOException("Réponse vide")
@@ -184,7 +185,7 @@ fun PhotoEditScreen(
             ) {
                 var loading by remember { mutableStateOf(true) }
                 AsyncImage(
-                    model = imageUrl,
+                    model = imageModel,
                     contentDescription = photo.filename,
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize(),

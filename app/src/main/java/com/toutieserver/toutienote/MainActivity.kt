@@ -77,7 +77,10 @@ fun AppNavigation() {
             )
         }
         is Screen.PhotoFullscreen -> {
-            BackHandler { screen = Screen.AlbumPhotos(s.album) }
+            BackHandler {
+                s.localImageFile?.delete()
+                screen = Screen.AlbumPhotos(s.album)
+            }
             PhotoFullscreenScreen(
                 photo = s.photo,
                 localImageFile = s.localImageFile,
