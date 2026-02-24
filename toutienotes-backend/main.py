@@ -367,9 +367,11 @@ def login(data: AuthLogin):
     if not row:
         db.close()
         raise HTTPException(401, "Identifiants incorrects")
-    token = str(uuid.uuid4())
-    db.execute("UPDATE users SET token=? WHERE id=?", (token, row["id"]))
-    db.commit()
+    # Garder le token existant pour permettre connexion multi-appareils
+    token = row["token"] if row["token"] else str(uuid.uuid4())
+    if not row["token"]:
+        db.execute("UPDATE users SET token=? WHERE id=?", (token, row["id"]))
+        db.commit()
     db.close()
     return {"token": token, "user_id": row["id"], "username": row["username"]}
 
