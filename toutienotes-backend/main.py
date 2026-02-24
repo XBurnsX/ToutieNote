@@ -228,11 +228,11 @@ def are_crop_similar(ch1, ch2) -> bool:
                     best_j = j
             except Exception:
                 pass
-        if best_diff <= 10 and best_j >= 0:
+        if best_diff <= 12 and best_j >= 0:
             matched += 1
             used.add(best_j)
 
-    needed = max(1, int(len(small) * 0.50))
+    needed = max(1, int(len(small) * 0.80))
     return matched >= needed
 
 def compute_resize_hash(image_path: Path):

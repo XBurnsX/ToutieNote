@@ -1,9 +1,13 @@
 package com.toutieserver.toutienote.ui.screens
 
+import android.Manifest
 import android.content.ContentUris
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import android.util.Log
 import android.util.Size
 import androidx.compose.animation.animateColorAsState
@@ -31,6 +35,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import coil.decode.VideoFrameDecoder
 import coil.request.ImageRequest
@@ -60,8 +65,34 @@ fun GalleryPickerScreen(
     val selected = remember { mutableStateMapOf<Long, Uri>() }
     var loading by remember { mutableStateOf(true) }
     var debugInfo by remember { mutableStateOf("") }
+    var permissionDenied by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
+    val permissionsNeeded = if (Build.VERSION.SDK_INT >= 33) {
+        arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
+    } else {
+        arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+    }
+
+    var hasPermission by remember {
+        mutableStateOf(permissionsNeeded.all {
+            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+        })
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        hasPermission = results.values.all { it }
+        permissionDenied = !hasPermission
+        if (!hasPermission) loading = false
+    }
+
+    LaunchedEffect(hasPermission) {
+        if (!hasPermission) {
+            permissionLauncher.launch(permissionsNeeded)
+            return@LaunchedEffect
+        }
+        loading = true
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             val items = mutableListOf<DeviceMedia>()
             val diag = StringBuilder()
@@ -186,6 +217,23 @@ fun GalleryPickerScreen(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceColor),
                 actions = {
+                    if (filteredMedia.isNotEmpty()) {
+                        TextButton(
+                            onClick = {
+                                if (selected.size == filteredMedia.size) {
+                                    selected.clear()
+                                } else {
+                                    filteredMedia.forEach { m -> selected[m.id] = m.uri }
+                                }
+                            }
+                        ) {
+                            Text(
+                                if (selected.size == filteredMedia.size) "Tout désélectionner" else "Tout sélectionner",
+                                fontSize = 12.sp,
+                                color = AccentColor
+                            )
+                        }
+                    }
                     if (selected.isNotEmpty()) {
                         Button(
                             onClick = { onConfirm(selected.values.toList()) },
@@ -242,7 +290,25 @@ fun GalleryPickerScreen(
                 }
             }
 
-            if (loading) {
+            if (permissionDenied) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Default.PhotoLibrary, null, tint = MutedColor, modifier = Modifier.size(48.dp))
+                        Spacer(Modifier.height(16.dp))
+                        Text("Permission photos requise", color = TextColor, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(8.dp))
+                        Text("Autorise l'accès pour importer des photos", color = MutedColor, fontSize = 14.sp)
+                        Spacer(Modifier.height(24.dp))
+                        Button(
+                            onClick = { permissionLauncher.launch(permissionsNeeded) },
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentColor),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("Autoriser")
+                        }
+                    }
+                }
+            } else if (loading) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = AccentColor)
                 }
