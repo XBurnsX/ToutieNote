@@ -14,7 +14,6 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
@@ -60,7 +59,6 @@ fun NotesScreen(
 
     var searchQuery  by remember { mutableStateOf("") }
     var isRefreshing by remember { mutableStateOf(false) }
-    var showMenu     by remember { mutableStateOf(false) }
 
     val filteredNotes = remember(notes, searchQuery) {
         if (searchQuery.isBlank()) notes
@@ -164,31 +162,7 @@ fun NotesScreen(
                     IconButton(onClick = onSettings) {
                         Icon(Icons.Outlined.Settings, "Paramètres", tint = MutedColor)
                     }
-                    // Menu 3 points
-                    Box {
-                        IconButton(onClick = { showMenu = true }) {
-                            Icon(Icons.Default.MoreVert, "Menu", tint = TextColor)
-                        }
-                        DropdownMenu(
-                            expanded = showMenu,
-                            onDismissRequest = { showMenu = false },
-                            containerColor = SurfaceColor,
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Paramètres", color = TextColor) },
-                                onClick = { showMenu = false; onSettings() }
-                            )
-                            HorizontalDivider(color = BorderColor)
-                            DropdownMenuItem(
-                                text = { Text("Déconnexion", color = DangerColor) },
-                                onClick = {
-                                    com.toutieserver.toutienote.data.auth.AuthRepository.clearSession()
-                                    showMenu = false
-                                    onLogout()
-                                }
-                            )
-                        }
-                    }
+
                 }
             )
         },

@@ -73,6 +73,7 @@ dependencies {
 
     // Crop (Cropify - Compose-native, stable)
     implementation("com.github.MoyuruAizawa:Cropify:0.5.2")
+    implementation(libs.androidx.compose.material3)
 
     debugImplementation(libs.androidx.ui.tooling)
 
