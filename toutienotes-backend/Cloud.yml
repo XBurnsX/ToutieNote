@@ -1,0 +1,14 @@
+# Exemple Cloud.yml pour ToutieNote
+# Copie ce fichier sur ton serveur ou merge les volumes dans ton Cloud.yml existant.
+#
+# IMPORTANT: Le volume doit monter /mnt/Nextcloud/toutienotes (host) vers
+# /mnt/Nextcloud/toutienotes (container) car le code utilise ce chemin.
+
+services:
+  toutienotes:
+    build: .
+    ports:
+      - "8491:8000"
+    volumes:
+      - /mnt/Nextcloud/toutienotes:/mnt/Nextcloud/toutienotes
+    restart: unless-stopped

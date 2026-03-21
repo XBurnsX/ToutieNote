@@ -31,7 +31,8 @@ app.add_middleware(
 )
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-DATA_DIR   = Path("/data")
+DATA_DIR   = Path("/mnt/Nextcloud/toutienotes")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH    = DATA_DIR / "notes.db"
 VAULT_DIR  = DATA_DIR / "vault"
 VAULT_DIR.mkdir(parents=True, exist_ok=True)
