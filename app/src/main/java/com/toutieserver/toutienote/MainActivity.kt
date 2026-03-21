@@ -19,8 +19,6 @@ import com.toutieserver.toutienote.ui.theme.ToutieNoteTheme
 import com.toutieserver.toutienote.viewmodels.AuthViewModel
 import com.toutieserver.toutienote.viewmodels.NotesViewModel
 import com.toutieserver.toutienote.viewmodels.VaultViewModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 
 sealed class Screen {
     data class NoteEdit(val note: Note?) : Screen()
@@ -68,6 +66,7 @@ fun AppNavigation(
             if (AuthRepository.isLoggedIn()) Screen.Notes else Screen.Login
         )
     }
+    val noteBackStack = remember { mutableStateListOf<Screen.NoteEdit>() }
     val unlockedAlbums     = remember { mutableStateListOf<String>() }
     var pendingLockedAlbum by remember { mutableStateOf<Album?>(null) }
 
@@ -86,30 +85,29 @@ fun AppNavigation(
         )
     }
 
-    // Naviguer vers une note par son titre (depuis un lien interne)
-    fun navigateToNoteByTitle(title: String) {
-        scope.launch(Dispatchers.IO) {
-            try {
-                // Chercher la note existante par titre
-                val existing = com.toutieserver.toutienote.data.api.ApiService
-                    .getNoteByTitle(title, includeHidden = true)
-                if (existing != null) {
-                    // Note existe -> charger et naviguer
-                    kotlinx.coroutines.withContext(Dispatchers.Main) {
-                        screen = Screen.NoteEdit(existing)
-                    }
-                } else {
-                    // Note n'existe pas -> creer cachee et naviguer
-                    val newNote = com.toutieserver.toutienote.data.api.ApiService
-                        .createNote(title, "", hidden = true)
-                    kotlinx.coroutines.withContext(Dispatchers.Main) {
-                        screen = Screen.NoteEdit(newNote)
-                    }
-                }
-            } catch (e: Exception) {
-                // Silencieux: on reste sur la note courante
-            }
+    fun openRootNote(note: Note?) {
+        noteBackStack.clear()
+        screen = Screen.NoteEdit(note)
+    }
+
+    fun goBackFromNote() {
+        if (noteBackStack.isNotEmpty()) {
+            screen = noteBackStack.removeAt(noteBackStack.lastIndex)
+        } else {
+            screen = Screen.Notes
         }
+    }
+
+    // Naviguer vers une note par son titre (depuis un lien interne)
+    fun navigateToNoteByTitle(title: String, sourceNote: Note? = null) {
+        notesVm.ensureHiddenNote(title, onDone = { linkedNote ->
+            sourceNote?.let {
+                noteBackStack.add(Screen.NoteEdit(it))
+            } ?: (screen as? Screen.NoteEdit)?.let { currentNoteScreen ->
+                noteBackStack.add(currentNoteScreen)
+            }
+            screen = Screen.NoteEdit(linkedNote)
+        })
     }
 
     when (val s = screen) {
@@ -126,7 +124,7 @@ fun AppNavigation(
         is Screen.Notes -> NotesScreen(
             notesVm     = notesVm,
             vaultVm     = vaultVm,
-            onNoteClick = { note -> screen = Screen.NoteEdit(note) },
+            onNoteClick = { note -> openRootNote(note) },
             onVaultOpen = { screen = Screen.Albums },
             onSettings  = { screen = Screen.Settings },
             onLogout    = { screen = Screen.Login },
@@ -140,12 +138,12 @@ fun AppNavigation(
             )
         }
         is Screen.NoteEdit -> {
-            BackHandler { screen = Screen.Notes }
+            BackHandler { goBackFromNote() }
             NoteEditScreen(
                 note        = s.note,
                 vm          = notesVm,
-                onBack      = { screen = Screen.Notes },
-                onLinkClick = { title -> navigateToNoteByTitle(title) },
+                onBack      = { goBackFromNote() },
+                onLinkClick = { title, sourceNote -> navigateToNoteByTitle(title, sourceNote) },
             )
         }
         is Screen.Albums -> {

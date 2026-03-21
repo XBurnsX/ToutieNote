@@ -132,6 +132,7 @@ fun NotesScreen(
     val filteredNotes = remember(notes, searchQuery, selectedTag, sortMode) {
         val query = searchQuery.trim().lowercase()
         notes
+            .filterNot { it.isHidden }
             .filter { note ->
                 val matchesSearch = query.isBlank() ||
                     note.title.lowercase().contains(query) ||
@@ -484,7 +485,7 @@ fun NotesScreen(
 
                     gridMode -> {
                         LazyVerticalGrid(
-                            columns = GridCells.Adaptive(minSize = 220.dp),
+                            columns = GridCells.Fixed(2),
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(start = 6.dp, end = 6.dp, top = 8.dp, bottom = 96.dp),
                         ) {

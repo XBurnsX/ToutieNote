@@ -86,6 +86,5 @@ dependencies {
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
 
     // Text editor
-    implementation("com.mohamedrejeb.richeditor:richeditor-compose:1.0.0-rc10")
     implementation("com.mohamedrejeb.richeditor:richeditor-compose:1.0.0-rc13")
 }

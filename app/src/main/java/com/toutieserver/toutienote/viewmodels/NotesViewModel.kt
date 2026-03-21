@@ -14,6 +14,9 @@ import kotlinx.coroutines.launch
 
 class NotesViewModel : ViewModel() {
 
+    private fun visibleNotes(notes: List<Note>): List<Note> =
+        notes.filterNot { it.isHidden }
+
     private fun extractTags(title: String, content: String): List<String> {
         val regex = Regex("""(?<!\w)#([0-9A-Za-zÀ-ÿ_-]{1,32})""")
         return regex.findAll("$title $content")
@@ -46,7 +49,7 @@ class NotesViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             _loading.value = true
             try {
-                _notes.value = ApiService.getNotes()
+                _notes.value = visibleNotes(ApiService.getNotes())
                 _tags.value = ApiService.getTags()
             } catch (e: Exception) {
                 _error.value = "Erreur connexion serveur"
@@ -60,7 +63,7 @@ class NotesViewModel : ViewModel() {
             try {
                 val note = ApiService.createNote(title, content, hidden)
                 if (!hidden) {
-                    _notes.value = listOf(note.copy(tags = extractTags(note.title, note.content))) + _notes.value
+                    _notes.value = visibleNotes(listOf(note.copy(tags = extractTags(note.title, note.content))) + _notes.value)
                     _tags.value = ApiService.getTags()
                 }
                 viewModelScope.launch(Dispatchers.Main) { onCreated(note) }
@@ -83,7 +86,7 @@ class NotesViewModel : ViewModel() {
                     tags = extractTags(title, content),
                 )
                 val rest = _notes.value.filter { it.id != id }
-                _notes.value = if (updated != null) listOf(updated) + rest else _notes.value
+                _notes.value = if (updated != null) visibleNotes(listOf(updated) + rest) else visibleNotes(_notes.value)
                 _tags.value = ApiService.getTags()
                 _syncSuccess.value = true
             } catch (_: Exception) {
@@ -173,23 +176,33 @@ class NotesViewModel : ViewModel() {
             try {
                 val note = _notes.value.find { it.id == id } ?: return@launch
                 ApiService.updateNote(id, newTitle, note.content)
-                _notes.value = _notes.value.map {
+                _notes.value = visibleNotes(_notes.value.map {
                     if (it.id == id) it.copy(title = newTitle, tags = extractTags(newTitle, it.content)) else it
-                }
+                })
                 _tags.value = ApiService.getTags()
             } catch (_: Exception) {
             }
         }
     }
 
-    fun ensureHiddenNote(title: String, onDone: (Note) -> Unit = {}) {
+    fun ensureHiddenNote(
+        title: String,
+        onDone: (Note) -> Unit = {},
+        onError: (Throwable?) -> Unit = {}
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
-            try {
+            runCatching {
                 val existing = ApiService.getNoteByTitle(title, includeHidden = true)
-                val result = existing ?: ApiService.createNote(title, "", hidden = true)
+                existing ?: ApiService.createNote(title, "", hidden = true)
+            }.onSuccess { result ->
+                _notes.value = visibleNotes(
+                    _notes.value.map { note ->
+                        if (note.id == result.id) result else note
+                    }
+                )
                 viewModelScope.launch(Dispatchers.Main) { onDone(result) }
-            } catch (_: Exception) {
-                // Silent: note links should not block editing flow.
+            }.onFailure { error ->
+                viewModelScope.launch(Dispatchers.Main) { onError(error) }
             }
         }
     }
