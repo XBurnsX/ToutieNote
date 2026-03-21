@@ -253,7 +253,7 @@ fun GalleryPickerScreen(
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             if (albums.size > 1) {
-                ScrollableTabRow(
+                PrimaryScrollableTabRow(
                     selectedTabIndex = if (selectedAlbum == null) 0 else albums.indexOf(selectedAlbum) + 1,
                     containerColor = SurfaceColor,
                     contentColor = TextColor,

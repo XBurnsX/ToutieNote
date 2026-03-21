@@ -1,18 +1,18 @@
 package com.toutieserver.toutienote.data.api
 
-import android.util.Log
 import com.toutieserver.toutienote.config.Config
 import com.toutieserver.toutienote.data.auth.AuthRepository
 import com.toutieserver.toutienote.data.models.Album
+import com.toutieserver.toutienote.data.models.NoteAttachment
 import com.toutieserver.toutienote.data.models.Note
 import com.toutieserver.toutienote.data.models.Photo
+import com.toutieserver.toutienote.data.models.TagSummary
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -39,6 +39,9 @@ object ApiService {
     private val JSON = "application/json; charset=utf-8".toMediaType()
     private val base = Config.BASE_URL
 
+    private fun encodeQuery(value: String): String =
+        java.net.URLEncoder.encode(value, "UTF-8")
+
     private fun executeForBody(req: okhttp3.Request): String {
         val response = client.newCall(req).execute()
         if (!response.isSuccessful) {
@@ -59,22 +62,52 @@ object ApiService {
         return if (obj.isNull(key)) null else obj.optString(key)
     }
 
+    private fun absoluteUrl(url: String): String =
+        if (url.startsWith("http://") || url.startsWith("https://")) url else "$base$url"
+
     private fun noteFromJson(obj: JSONObject): Note {
+        val updatedAt = obj.optString("updated_at")
+        val tagsArray = obj.optJSONArray("tags") ?: JSONArray()
         return Note(
             id         = obj.getString("id"),
             title      = obj.optString("title"),
             content    = obj.optString("content"),
-            updatedAt  = obj.optString("updated_at"),
+            updatedAt  = updatedAt,
+            createdAt  = obj.optString("created_at", updatedAt),
             isHidden   = obj.optInt("is_hidden",   0) == 1,
             isPinned   = obj.optInt("is_pinned",   0) == 1,
             isFavorite = obj.optInt("is_favorite", 0) == 1,
             isLocked   = obj.optBoolean("is_locked", false),
             colorTag   = optNullableString(obj, "color_tag"),
+            tags       = (0 until tagsArray.length()).mapNotNull { index ->
+                tagsArray.optString(index).takeIf { it.isNotBlank() }
+            },
         )
     }
 
+    private fun noteAttachmentFromJson(obj: JSONObject): NoteAttachment =
+        NoteAttachment(
+            id = obj.getString("id"),
+            filename = obj.getString("filename"),
+            url = absoluteUrl(obj.getString("url")),
+            mediaType = obj.optString("media_type", "file"),
+            size = obj.optLong("size", 0L),
+            createdAt = obj.optString("created_at"),
+        )
+
     // ── Auth ────────────────────────────────────────────────────
-    data class AuthResponse(val token: String, val user_id: String, val username: String)
+    data class AuthResponse(
+        val token: String,
+        val userId: String,
+        val username: String,
+        val createdAt: String,
+    )
+
+    data class AccountInfo(
+        val userId: String,
+        val username: String,
+        val createdAt: String,
+    )
 
     fun register(username: String, password: String): AuthResponse {
         val json = JSONObject().put("username", username).put("password", password).toString()
@@ -82,7 +115,12 @@ object ApiService {
             .post(json.toRequestBody(JSON)).build()
         val body = executeForBody(req)
         val obj = JSONObject(body)
-        return AuthResponse(obj.getString("token"), obj.getString("user_id"), obj.getString("username"))
+        return AuthResponse(
+            token = obj.getString("token"),
+            userId = obj.getString("user_id"),
+            username = obj.getString("username"),
+            createdAt = obj.optString("created_at"),
+        )
     }
 
     fun login(username: String, password: String): AuthResponse {
@@ -91,12 +129,39 @@ object ApiService {
             .post(json.toRequestBody(JSON)).build()
         val body = executeForBody(req)
         val obj = JSONObject(body)
-        return AuthResponse(obj.getString("token"), obj.getString("user_id"), obj.getString("username"))
+        return AuthResponse(
+            token = obj.getString("token"),
+            userId = obj.getString("user_id"),
+            username = obj.getString("username"),
+            createdAt = obj.optString("created_at"),
+        )
+    }
+
+    fun getAccountInfo(): AccountInfo {
+        val req = okhttp3.Request.Builder().url("$base/api/auth/me").get().build()
+        val body = executeForBody(req)
+        val obj = JSONObject(body)
+        return AccountInfo(
+            userId = obj.getString("user_id"),
+            username = obj.getString("username"),
+            createdAt = obj.optString("created_at"),
+        )
+    }
+
+    fun changePassword(oldPassword: String, newPassword: String) {
+        val json = JSONObject()
+            .put("old_password", oldPassword)
+            .put("new_password", newPassword)
+            .toString()
+        val req = okhttp3.Request.Builder().url("$base/api/auth/change-password")
+            .post(json.toRequestBody(JSON)).build()
+        executeForOk(req)
     }
 
     // ── Notes ──────────────────────────────────────────────────
-    fun getNotes(): List<Note> {
-        val req = okhttp3.Request.Builder().url("$base/api/notes").get().build()
+    fun getNotes(includeHidden: Boolean = false): List<Note> {
+        val url = "$base/api/notes?include_hidden=${if (includeHidden) "true" else "false"}"
+        val req = okhttp3.Request.Builder().url(url).get().build()
         val body = executeForBody(req)
         val arr = JSONArray(body)
         return (0 until arr.length()).map { i -> noteFromJson(arr.getJSONObject(i)) }
@@ -108,28 +173,87 @@ object ApiService {
         return noteFromJson(JSONObject(body))
     }
 
-    fun searchNotes(q: String): List<Note> {
+    fun getNoteByTitle(title: String, includeHidden: Boolean = true): Note? {
+        return try {
+            val req = okhttp3.Request.Builder()
+                .url("$base/api/notes/by-title?title=${encodeQuery(title)}&include_hidden=${if (includeHidden) "true" else "false"}")
+                .get()
+                .build()
+            val response = client.newCall(req).execute()
+            if (response.code == 404) return null
+            if (!response.isSuccessful) {
+                throw java.io.IOException("HTTP ${response.code}: ${response.message}")
+            }
+            val body = response.body?.string() ?: throw java.io.IOException("Reponse vide")
+            noteFromJson(JSONObject(body))
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun searchNotes(q: String, includeHidden: Boolean = false): List<Note> {
         val req = okhttp3.Request.Builder()
-            .url("$base/api/notes/search?q=${java.net.URLEncoder.encode(q, "UTF-8")}")
+            .url("$base/api/notes/search?q=${encodeQuery(q)}&include_hidden=${if (includeHidden) "true" else "false"}")
             .get().build()
         val body = executeForBody(req)
         val arr = JSONArray(body)
-        return (0 until arr.length()).map { i ->
-            val obj = arr.getJSONObject(i)
-            Note(id = obj.getString("id"), title = obj.optString("title"),
-                 content = "", updatedAt = obj.optString("updated_at"))
-        }
+        return (0 until arr.length()).map { i -> noteFromJson(arr.getJSONObject(i)) }
     }
 
     fun getBacklinks(noteId: String): List<Note> {
         val req = okhttp3.Request.Builder().url("$base/api/notes/$noteId/backlinks").get().build()
         val body = executeForBody(req)
         val arr = JSONArray(body)
+        return (0 until arr.length()).map { i -> noteFromJson(arr.getJSONObject(i)) }
+    }
+
+    fun getTags(): List<TagSummary> {
+        val req = okhttp3.Request.Builder().url("$base/api/tags").get().build()
+        val body = executeForBody(req)
+        val arr = JSONArray(body)
         return (0 until arr.length()).map { i ->
             val obj = arr.getJSONObject(i)
-            Note(id = obj.getString("id"), title = obj.optString("title"),
-                 content = "", updatedAt = obj.optString("updated_at"))
+            TagSummary(
+                name = obj.getString("name"),
+                noteCount = obj.optInt("note_count", 0),
+            )
         }
+    }
+
+    fun updateNoteTags(id: String, tags: List<String>): List<String> {
+        val json = JSONObject().put("tags", JSONArray(tags)).toString()
+        val req = okhttp3.Request.Builder().url("$base/api/notes/$id/tags")
+            .put(json.toRequestBody(JSON)).build()
+        val body = executeForBody(req)
+        val arr = JSONObject(body).optJSONArray("tags") ?: JSONArray()
+        return (0 until arr.length()).mapNotNull { index ->
+            arr.optString(index).takeIf { it.isNotBlank() }
+        }
+    }
+
+    fun getNoteAttachments(noteId: String): List<NoteAttachment> {
+        val req = okhttp3.Request.Builder().url("$base/api/notes/$noteId/attachments").get().build()
+        val body = executeForBody(req)
+        val arr = JSONArray(body)
+        return (0 until arr.length()).map { index ->
+            noteAttachmentFromJson(arr.getJSONObject(index))
+        }
+    }
+
+    fun uploadNoteAttachment(noteId: String, file: File, filename: String, mimeType: String): NoteAttachment {
+        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("file", filename, file.asRequestBody(mimeType.toMediaType()))
+            .build()
+        val req = okhttp3.Request.Builder().url("$base/api/notes/$noteId/attachments")
+            .post(body).build()
+        val responseBody = executeForBody(req)
+        return noteAttachmentFromJson(JSONObject(responseBody))
+    }
+
+    fun deleteNoteAttachment(noteId: String, attachmentId: String) {
+        val req = okhttp3.Request.Builder().url("$base/api/notes/$noteId/attachments/$attachmentId")
+            .delete().build()
+        executeForOk(req)
     }
 
     fun createNote(title: String, content: String, hidden: Boolean = false): Note {
@@ -460,7 +584,7 @@ object ApiService {
         val url = if (albumId != null) "$base/api/vault/scan-duplicates?album_id=$albumId"
                   else "$base/api/vault/scan-duplicates"
         val req = okhttp3.Request.Builder().url(url)
-            .post(okhttp3.RequestBody.create(null, ByteArray(0))).build()
+            .post(ByteArray(0).toRequestBody(null)).build()
         val body = executeForBody(req)
         val root = JSONObject(body)
         return Pair(root.getString("job_id"), root.optInt("total", 0))
@@ -470,7 +594,7 @@ object ApiService {
         val url = if (albumId != null) "$base/api/vault/scan-duplicates-sync?album_id=$albumId"
                   else "$base/api/vault/scan-duplicates-sync"
         val req = okhttp3.Request.Builder().url(url)
-            .post(okhttp3.RequestBody.create(null, ByteArray(0))).build()
+            .post(ByteArray(0).toRequestBody(null)).build()
         val body = executeForBody(req)
         val root = JSONObject(body)
         val groups = mutableListOf<List<Photo>>()

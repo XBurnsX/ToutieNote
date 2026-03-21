@@ -162,7 +162,7 @@ fun DuplicatesScreen(
                         )
                         Spacer(Modifier.height(24.dp))
                         LinearProgressIndicator(
-                            progress = (scanPercent / 100f).coerceIn(0f, 1f),
+                            progress = { (scanPercent / 100f).coerceIn(0f, 1f) },
                             modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
                             color = AccentColor,
                             trackColor = Surface2Color,

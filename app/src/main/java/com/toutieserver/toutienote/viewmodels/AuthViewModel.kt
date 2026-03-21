@@ -20,7 +20,7 @@ class AuthViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val res = ApiService.login(username, password)
-                AuthRepository.saveSession(res.token, res.username)
+                AuthRepository.saveSession(res.token, res.username, res.userId, res.createdAt)
                 kotlinx.coroutines.withContext(Dispatchers.Main) { onSuccess() }
             } catch (e: Exception) {
                 _error.value = e.message ?: "Erreur de connexion"
@@ -32,7 +32,7 @@ class AuthViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val res = ApiService.register(username, password)
-                AuthRepository.saveSession(res.token, res.username)
+                AuthRepository.saveSession(res.token, res.username, res.userId, res.createdAt)
                 kotlinx.coroutines.withContext(Dispatchers.Main) { onSuccess() }
             } catch (e: Exception) {
                 _error.value = e.message ?: "Erreur d'inscription"

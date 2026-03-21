@@ -4,7 +4,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 
 // ── Base colors (immuables) ────────────────────────────────────────────────────
-val BgColor      = Color(0xFF0A0A0C)
+val BgColor      = Color(0xFF0F0F0F)
 val SurfaceColor = Color(0xFF16161A)
 val Surface2Color= Color(0xFF1E1E24)
 val BorderColor  = Color(0xFF2A2A32)

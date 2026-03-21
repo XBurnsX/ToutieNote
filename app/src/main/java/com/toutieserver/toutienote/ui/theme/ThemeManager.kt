@@ -19,7 +19,7 @@ val AccentOptions = listOf(
     AccentOption("yellow", "Jaune",  Color(0xFFD4B84A)),
 )
 
-val DefaultAccentOption = AccentOptions.first { it.key == "blue" }
+val DefaultAccentOption = AccentOptions.first { it.key == "violet" }
 
 // ── CompositionLocal pour couleur accent ───────────────────────────────────────
 val LocalAccentColor = compositionLocalOf { DefaultAccentOption.color }

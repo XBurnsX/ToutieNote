@@ -1,9 +1,10 @@
-package com.toutieserver.toutienote.viewmodels
+﻿package com.toutieserver.toutienote.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.toutieserver.toutienote.data.api.ApiService
 import com.toutieserver.toutienote.data.models.Note
+import com.toutieserver.toutienote.data.models.TagSummary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -12,6 +13,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 class NotesViewModel : ViewModel() {
+
+    private fun extractTags(title: String, content: String): List<String> {
+        val regex = Regex("""(?<!\w)#([0-9A-Za-zÀ-ÿ_-]{1,32})""")
+        return regex.findAll("$title $content")
+            .map { it.groupValues[1].lowercase() }
+            .distinct()
+            .sorted()
+            .toList()
+    }
 
     private val _notes = MutableStateFlow<List<Note>>(emptyList())
     val notes: StateFlow<List<Note>> = _notes
@@ -25,6 +35,9 @@ class NotesViewModel : ViewModel() {
     private val _syncSuccess = MutableStateFlow(false)
     val syncSuccess: StateFlow<Boolean> = _syncSuccess
 
+    private val _tags = MutableStateFlow<List<TagSummary>>(emptyList())
+    val tags: StateFlow<List<TagSummary>> = _tags
+
     private var syncJob: Job? = null
 
     init { loadNotes() }
@@ -34,6 +47,7 @@ class NotesViewModel : ViewModel() {
             _loading.value = true
             try {
                 _notes.value = ApiService.getNotes()
+                _tags.value = ApiService.getTags()
             } catch (e: Exception) {
                 _error.value = "Erreur connexion serveur"
             }
@@ -45,7 +59,10 @@ class NotesViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val note = ApiService.createNote(title, content, hidden)
-                if (!hidden) _notes.value = listOf(note) + _notes.value
+                if (!hidden) {
+                    _notes.value = listOf(note.copy(tags = extractTags(note.title, note.content))) + _notes.value
+                    _tags.value = ApiService.getTags()
+                }
                 viewModelScope.launch(Dispatchers.Main) { onCreated(note) }
             } catch (e: Exception) {
                 _error.value = "Erreur création note"
@@ -60,11 +77,17 @@ class NotesViewModel : ViewModel() {
             delay(1200)
             try {
                 ApiService.updateNote(id, title, content)
-                val updated = _notes.value.find { it.id == id }?.copy(title = title, content = content)
-                val rest    = _notes.value.filter { it.id != id }
+                val updated = _notes.value.find { it.id == id }?.copy(
+                    title = title,
+                    content = content,
+                    tags = extractTags(title, content),
+                )
+                val rest = _notes.value.filter { it.id != id }
                 _notes.value = if (updated != null) listOf(updated) + rest else _notes.value
+                _tags.value = ApiService.getTags()
                 _syncSuccess.value = true
-            } catch (e: Exception) { /* silent */ }
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -75,6 +98,7 @@ class NotesViewModel : ViewModel() {
             try {
                 ApiService.deleteNote(id)
                 _notes.value = _notes.value.filter { it.id != id }
+                _tags.value = ApiService.getTags()
             } catch (e: Exception) {
                 _error.value = "Erreur suppression"
             }
@@ -88,7 +112,8 @@ class NotesViewModel : ViewModel() {
                 _notes.value = _notes.value.map {
                     if (it.id == id) it.copy(isFavorite = newVal) else it
                 }
-            } catch (e: Exception) { /* silent */ }
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -99,7 +124,8 @@ class NotesViewModel : ViewModel() {
                 _notes.value = _notes.value.map {
                     if (it.id == id) it.copy(isPinned = newVal) else it
                 }
-            } catch (e: Exception) { /* silent */ }
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -111,7 +137,7 @@ class NotesViewModel : ViewModel() {
                     if (it.id == id) it.copy(isLocked = true) else it
                 }
                 viewModelScope.launch(Dispatchers.Main) { onSuccess() }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 viewModelScope.launch(Dispatchers.Main) { onError() }
             }
         }
@@ -148,9 +174,67 @@ class NotesViewModel : ViewModel() {
                 val note = _notes.value.find { it.id == id } ?: return@launch
                 ApiService.updateNote(id, newTitle, note.content)
                 _notes.value = _notes.value.map {
-                    if (it.id == id) it.copy(title = newTitle) else it
+                    if (it.id == id) it.copy(title = newTitle, tags = extractTags(newTitle, it.content)) else it
                 }
-            } catch (e: Exception) { /* silent */ }
+                _tags.value = ApiService.getTags()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    fun ensureHiddenNote(title: String, onDone: (Note) -> Unit = {}) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val existing = ApiService.getNoteByTitle(title, includeHidden = true)
+                val result = existing ?: ApiService.createNote(title, "", hidden = true)
+                viewModelScope.launch(Dispatchers.Main) { onDone(result) }
+            } catch (_: Exception) {
+                // Silent: note links should not block editing flow.
+            }
+        }
+    }
+
+    fun searchNotes(query: String, includeHidden: Boolean = true, onResult: (List<Note>) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val results = ApiService.searchNotes(query, includeHidden)
+                viewModelScope.launch(Dispatchers.Main) { onResult(results) }
+            } catch (_: Exception) {
+                viewModelScope.launch(Dispatchers.Main) { onResult(emptyList()) }
+            }
+        }
+    }
+
+    fun loadBacklinks(noteId: String, onResult: (List<Note>) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val results = ApiService.getBacklinks(noteId)
+                viewModelScope.launch(Dispatchers.Main) { onResult(results) }
+            } catch (_: Exception) {
+                viewModelScope.launch(Dispatchers.Main) { onResult(emptyList()) }
+            }
+        }
+    }
+
+    fun refreshTags() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                _tags.value = ApiService.getTags()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    fun updateNoteTags(id: String, tags: List<String>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val updatedTags = ApiService.updateNoteTags(id, tags)
+                _notes.value = _notes.value.map { note ->
+                    if (note.id == id) note.copy(tags = updatedTags) else note
+                }
+                _tags.value = ApiService.getTags()
+            } catch (_: Exception) {
+            }
         }
     }
 }

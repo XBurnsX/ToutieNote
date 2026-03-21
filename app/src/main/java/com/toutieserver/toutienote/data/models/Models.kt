@@ -5,11 +5,27 @@ data class Note(
     val title:      String,
     val content:    String,
     val updatedAt:  String,
+    val createdAt:  String = updatedAt,
     val isHidden:   Boolean = false,
     val isPinned:   Boolean = false,
     val isFavorite: Boolean = false,
     val isLocked:   Boolean = false,
     val colorTag:   String? = null,
+    val tags:       List<String> = emptyList(),
+)
+
+data class TagSummary(
+    val name: String,
+    val noteCount: Int,
+)
+
+data class NoteAttachment(
+    val id: String,
+    val filename: String,
+    val url: String,
+    val mediaType: String,
+    val size: Long,
+    val createdAt: String,
 )
 
 data class Photo(

@@ -86,28 +86,28 @@ fun AppNavigation(
         )
     }
 
-    // ── Naviguer vers une note par son titre (depuis un lien interne) ──────────
+    // Naviguer vers une note par son titre (depuis un lien interne)
     fun navigateToNoteByTitle(title: String) {
         scope.launch(Dispatchers.IO) {
             try {
                 // Chercher la note existante par titre
-                val existing = com.toutieserver.toutienote.data.api.ApiService.searchNotes(title)
-                    .firstOrNull { it.title.equals(title, ignoreCase = true) }
+                val existing = com.toutieserver.toutienote.data.api.ApiService
+                    .getNoteByTitle(title, includeHidden = true)
                 if (existing != null) {
-                    // Note existe → charger et naviguer
-                    val full = com.toutieserver.toutienote.data.api.ApiService.getNoteById(existing.id)
+                    // Note existe -> charger et naviguer
                     kotlinx.coroutines.withContext(Dispatchers.Main) {
-                        screen = Screen.NoteEdit(full)
+                        screen = Screen.NoteEdit(existing)
                     }
                 } else {
-                    // Note n'existe pas → créer cachée et naviguer
-                    val newNote = com.toutieserver.toutienote.data.api.ApiService.createNote(title, "", hidden = true)
+                    // Note n'existe pas -> creer cachee et naviguer
+                    val newNote = com.toutieserver.toutienote.data.api.ApiService
+                        .createNote(title, "", hidden = true)
                     kotlinx.coroutines.withContext(Dispatchers.Main) {
                         screen = Screen.NoteEdit(newNote)
                     }
                 }
             } catch (e: Exception) {
-                // Silencieux — on reste sur la note courante
+                // Silencieux: on reste sur la note courante
             }
         }
     }
@@ -235,3 +235,4 @@ fun AppNavigation(
         }
     }
 }
+

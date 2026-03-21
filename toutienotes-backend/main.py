@@ -1,9 +1,9 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-import sqlite3, os, shutil, hashlib, uuid, json, threading
+import sqlite3, os, shutil, hashlib, uuid, json, threading, re
 from datetime import datetime
 from pathlib import Path
 from PIL import Image
@@ -16,6 +16,7 @@ try:
 except ImportError:
     np = None
 import io, sys
+from urllib.parse import quote
 
 app = FastAPI()
 
@@ -36,11 +37,14 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH    = DATA_DIR / "notes.db"
 VAULT_DIR  = DATA_DIR / "vault"
 VAULT_DIR.mkdir(parents=True, exist_ok=True)
+NOTE_ATTACHMENTS_DIR = DATA_DIR / "note_attachments"
+NOTE_ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── DB init ────────────────────────────────────────────────────────────────────
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 def init_db():
@@ -96,10 +100,46 @@ def init_db():
             FOREIGN KEY (album_id) REFERENCES albums(id) ON DELETE CASCADE
         )
     """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS tags (
+            id         TEXT PRIMARY KEY,
+            user_id    TEXT NOT NULL,
+            name       TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(user_id, name)
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS note_tags (
+            note_id TEXT NOT NULL,
+            tag_id  TEXT NOT NULL,
+            PRIMARY KEY (note_id, tag_id),
+            FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+            FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS note_attachments (
+            id              TEXT PRIMARY KEY,
+            note_id         TEXT NOT NULL,
+            user_id         TEXT NOT NULL,
+            filename        TEXT NOT NULL,
+            stored_filename TEXT NOT NULL,
+            media_type      TEXT NOT NULL,
+            size            INTEGER DEFAULT 0,
+            created_at      TEXT NOT NULL
+        )
+    """)
     migrations = [
         ("albums", "pin_hash", "TEXT"),
         ("albums", "sort_order", "INTEGER DEFAULT 0"),
         ("albums", "user_id", "TEXT"),
+        ("notes", "created_at", "TEXT"),
+        ("notes", "is_hidden", "INTEGER DEFAULT 0"),
+        ("notes", "pin_hash", "TEXT"),
+        ("notes", "is_pinned", "INTEGER DEFAULT 0"),
+        ("notes", "is_favorite", "INTEGER DEFAULT 0"),
+        ("notes", "color_tag", "TEXT"),
         ("notes", "user_id", "TEXT"),
         ("photos", "thumbnail_filename", "TEXT"),
         ("photos", "media_type", "TEXT DEFAULT 'image'"),
@@ -114,6 +154,15 @@ def init_db():
             pass
 
     db.execute("UPDATE photos SET favorite=0 WHERE favorite IS NULL")
+    db.execute("UPDATE notes SET created_at = updated_at WHERE created_at IS NULL OR created_at = ''")
+    db.execute("UPDATE notes SET is_hidden = 0 WHERE is_hidden IS NULL")
+    db.execute("UPDATE notes SET is_pinned = 0 WHERE is_pinned IS NULL")
+    db.execute("UPDATE notes SET is_favorite = 0 WHERE is_favorite IS NULL")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_notes_user_updated ON notes(user_id, updated_at)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_notes_user_title ON notes(user_id, title)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_tags_user_name ON tags(user_id, name)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_note_tags_note ON note_tags(note_id)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_note_attachments_note ON note_attachments(note_id)")
     db.commit()
     # Migration: default user pour données existantes (après ajout user_id)
     try:
@@ -138,6 +187,9 @@ class NoteIn(BaseModel):
     title:   str = ""
     content: str = ""
 
+class NoteLock(BaseModel):
+    pin: str
+
 class PinSetup(BaseModel):
     pin: str
 
@@ -155,6 +207,13 @@ class AuthRegister(BaseModel):
 class AuthLogin(BaseModel):
     username: str
     password: str
+
+class AuthPasswordChange(BaseModel):
+    old_password: str
+    new_password: str
+
+class NoteTagsUpdate(BaseModel):
+    tags: list[str] = []
 
 class CropParams(BaseModel):
     x: int
@@ -313,6 +372,65 @@ def set_config(user_id: str, key: str, value: str):
 def hash_password(pw: str) -> str:
     return hashlib.sha256(pw.encode()).hexdigest()
 
+def normalize_tag(tag: str) -> str:
+    clean = re.sub(r"[^0-9A-Za-zÀ-ÿ_-]+", "", (tag or "").strip().lstrip("#"))
+    return clean.lower()
+
+def extract_tags_from_text(*parts: str):
+    found = []
+    for part in parts:
+        if not part:
+            continue
+        found.extend(re.findall(r"(?<!\w)#([0-9A-Za-zÀ-ÿ_-]{1,32})", part))
+    normalized = [normalize_tag(tag) for tag in found]
+    return sorted({tag for tag in normalized if tag})
+
+def get_note_tags(db: sqlite3.Connection, note_id: str):
+    rows = db.execute(
+        """
+        SELECT t.name
+        FROM tags t
+        INNER JOIN note_tags nt ON nt.tag_id = t.id
+        WHERE nt.note_id = ?
+        ORDER BY t.name COLLATE NOCASE ASC
+        """,
+        (note_id,)
+    ).fetchall()
+    return [row["name"] for row in rows]
+
+def set_note_tags(db: sqlite3.Connection, note_id: str, user_id: str, tags: list[str]):
+    normalized_tags = []
+    for tag in tags:
+        normalized = normalize_tag(tag)
+        if normalized and normalized not in normalized_tags:
+            normalized_tags.append(normalized)
+
+    db.execute("DELETE FROM note_tags WHERE note_id = ?", (note_id,))
+    now = datetime.utcnow().isoformat()
+    for tag_name in normalized_tags:
+        row = db.execute(
+            "SELECT id FROM tags WHERE user_id=? AND name=?",
+            (user_id, tag_name)
+        ).fetchone()
+        tag_id = row["id"] if row else str(uuid.uuid4())
+        if not row:
+            db.execute(
+                "INSERT INTO tags (id, user_id, name, created_at) VALUES (?,?,?,?)",
+                (tag_id, user_id, tag_name, now)
+            )
+        db.execute(
+            "INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?,?)",
+            (note_id, tag_id)
+        )
+
+def sync_note_tags(db: sqlite3.Connection, note_id: str, user_id: str, title: str, content: str):
+    set_note_tags(db, note_id, user_id, extract_tags_from_text(title, content))
+
+def serialize_note_attachment(row: sqlite3.Row):
+    attachment = dict(row)
+    attachment["url"] = f"/api/notes/attachments/{attachment['stored_filename']}"
+    return attachment
+
 def get_user_by_token(token: str):
     if not token:
         return None
@@ -356,13 +474,13 @@ def register(data: AuthRegister):
     )
     db.commit()
     db.close()
-    return {"token": token, "user_id": uid, "username": data.username}
+    return {"token": token, "user_id": uid, "username": data.username, "created_at": now}
 
 @app.post("/api/auth/login")
 def login(data: AuthLogin):
     db = get_db()
     row = db.execute(
-        "SELECT id, username, token FROM users WHERE username=? AND password_hash=?",
+        "SELECT id, username, token, created_at FROM users WHERE username=? AND password_hash=?",
         (data.username.lower(), hash_password(data.password))
     ).fetchone()
     if not row:
@@ -374,34 +492,168 @@ def login(data: AuthLogin):
         db.execute("UPDATE users SET token=? WHERE id=?", (token, row["id"]))
         db.commit()
     db.close()
-    return {"token": token, "user_id": row["id"], "username": row["username"]}
+    return {"token": token, "user_id": row["id"], "username": row["username"], "created_at": row["created_at"]}
+
+@app.get("/api/auth/me")
+def auth_me(user: dict = Depends(get_current_user)):
+    return {
+        "user_id": user["id"],
+        "username": user["username"],
+        "created_at": user["created_at"],
+    }
+
+@app.post("/api/auth/change-password")
+def change_password(data: AuthPasswordChange, user: dict = Depends(get_current_user)):
+    if len(data.new_password) < 4:
+        raise HTTPException(400, "Mot de passe trop court (min 4 caracteres)")
+    db = get_db()
+    row = db.execute(
+        "SELECT password_hash FROM users WHERE id=?",
+        (user["id"],)
+    ).fetchone()
+    if not row:
+        db.close()
+        raise HTTPException(404, "Utilisateur introuvable")
+    if row["password_hash"] != hash_password(data.old_password):
+        db.close()
+        raise HTTPException(401, "Ancien mot de passe incorrect")
+    db.execute(
+        "UPDATE users SET password_hash=? WHERE id=?",
+        (hash_password(data.new_password), user["id"])
+    )
+    db.commit()
+    db.close()
+    return {"ok": True}
 
 # ══════════════════════════════════════════════════════════════════════════════
 # NOTES
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _serialize_note(row: sqlite3.Row, db: sqlite3.Connection | None = None):
+    note = dict(row)
+    note["created_at"] = note.get("created_at") or note.get("updated_at")
+    note["is_hidden"] = int(note.get("is_hidden") or 0)
+    note["is_pinned"] = int(note.get("is_pinned") or 0)
+    note["is_favorite"] = int(note.get("is_favorite") or 0)
+    note["is_locked"] = bool(note.get("pin_hash"))
+    note["tags"] = get_note_tags(db, note["id"]) if db else []
+    note.pop("pin_hash", None)
+    return note
+
+def _require_note_pin(pin: str):
+    if len(pin) != 4 or not pin.isdigit():
+        raise HTTPException(400, "PIN doit etre 4 chiffres")
+
 @app.get("/api/notes")
-def list_notes(user: dict = Depends(get_current_user)):
+def list_notes(include_hidden: bool = False, user: dict = Depends(get_current_user)):
     db = get_db()
-    rows = db.execute("SELECT * FROM notes WHERE user_id=? OR user_id IS NULL ORDER BY updated_at DESC", (user["id"],)).fetchall()
+    hidden_clause = "" if include_hidden else "AND COALESCE(is_hidden, 0) = 0"
+    rows = db.execute(
+        f"""
+        SELECT * FROM notes
+        WHERE (user_id=? OR user_id IS NULL) {hidden_clause}
+        ORDER BY COALESCE(is_pinned,0) DESC, COALESCE(is_favorite,0) DESC, updated_at DESC
+        """,
+        (user["id"],)
+    ).fetchall()
+    payload = [_serialize_note(r, db) for r in rows]
     db.close()
-    return [dict(r) for r in rows]
+    return payload
+
+@app.get("/api/notes/search")
+def search_notes(q: str = Query(""), include_hidden: bool = False, user: dict = Depends(get_current_user)):
+    query = q.strip()
+    if not query:
+        return []
+    like = f"%{query}%"
+    db = get_db()
+    hidden_clause = "" if include_hidden else "AND COALESCE(is_hidden, 0) = 0"
+    rows = db.execute(
+        f"""
+        SELECT * FROM notes
+        WHERE (user_id=? OR user_id IS NULL) {hidden_clause}
+          AND (title LIKE ? COLLATE NOCASE OR content LIKE ? COLLATE NOCASE)
+        ORDER BY COALESCE(is_pinned,0) DESC, COALESCE(is_favorite,0) DESC, updated_at DESC
+        LIMIT 50
+        """,
+        (user["id"], like, like)
+    ).fetchall()
+    payload = [_serialize_note(r, db) for r in rows]
+    db.close()
+    return payload
+
+@app.get("/api/notes/by-title")
+def get_note_by_title(
+    title: str = Query(..., min_length=1),
+    include_hidden: bool = True,
+    user: dict = Depends(get_current_user),
+):
+    db = get_db()
+    hidden_clause = "" if include_hidden else "AND COALESCE(is_hidden, 0) = 0"
+    row = db.execute(
+        f"""
+        SELECT * FROM notes
+        WHERE (user_id=? OR user_id IS NULL) {hidden_clause}
+          AND LOWER(TRIM(title)) = LOWER(TRIM(?))
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (user["id"], title)
+    ).fetchone()
+    if not row:
+        db.close()
+        raise HTTPException(404, "Note introuvable")
+    payload = _serialize_note(row, db)
+    db.close()
+    return payload
 
 @app.post("/api/notes")
-def create_note(note: NoteIn, user: dict = Depends(get_current_user)):
+def create_note(note: NoteIn, hidden: bool = False, user: dict = Depends(get_current_user)):
     db = get_db()
     nid = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
-    db.execute("INSERT INTO notes (id, title, content, updated_at, user_id) VALUES(?,?,?,?,?)", (nid, note.title, note.content, now, user["id"]))
+    db.execute(
+        """
+        INSERT INTO notes (
+            id, title, content, updated_at, created_at, user_id,
+            is_hidden, is_pinned, is_favorite
+        ) VALUES (?,?,?,?,?,?,?,?,?)
+        """,
+        (nid, note.title, note.content, now, now, user["id"], 1 if hidden else 0, 0, 0)
+    )
+    sync_note_tags(db, nid, user["id"], note.title, note.content)
     db.commit()
+    row = db.execute("SELECT * FROM notes WHERE id=?", (nid,)).fetchone()
+    payload = _serialize_note(row, db)
     db.close()
-    return {"id": nid, "title": note.title, "content": note.content, "updated_at": now}
+    return payload
+
+@app.get("/api/notes/{note_id}")
+def get_note(note_id: str, user: dict = Depends(get_current_user)):
+    db = get_db()
+    row = db.execute(
+        "SELECT * FROM notes WHERE id=? AND (user_id=? OR user_id IS NULL)",
+        (note_id, user["id"])
+    ).fetchone()
+    if not row:
+        db.close()
+        raise HTTPException(404, "Note introuvable")
+    payload = _serialize_note(row, db)
+    db.close()
+    return payload
 
 @app.put("/api/notes/{note_id}")
 def update_note(note_id: str, note: NoteIn, user: dict = Depends(get_current_user)):
     db = get_db()
     now = datetime.utcnow().isoformat()
-    db.execute("UPDATE notes SET title=?, content=?, updated_at=? WHERE id=? AND (user_id=? OR user_id IS NULL)", (note.title, note.content, now, note_id, user["id"]))
+    cur = db.execute(
+        "UPDATE notes SET title=?, content=?, updated_at=? WHERE id=? AND (user_id=? OR user_id IS NULL)",
+        (note.title, note.content, now, note_id, user["id"])
+    )
+    if cur.rowcount == 0:
+        db.close()
+        raise HTTPException(404, "Note introuvable")
+    sync_note_tags(db, note_id, user["id"], note.title, note.content)
     db.commit()
     db.close()
     return {"id": note_id, "updated_at": now}
@@ -409,10 +661,299 @@ def update_note(note_id: str, note: NoteIn, user: dict = Depends(get_current_use
 @app.delete("/api/notes/{note_id}")
 def delete_note(note_id: str, user: dict = Depends(get_current_user)):
     db = get_db()
-    db.execute("DELETE FROM notes WHERE id=? AND (user_id=? OR user_id IS NULL)", (note_id, user["id"]))
+    attachments = db.execute(
+        "SELECT stored_filename FROM note_attachments WHERE note_id=? AND user_id=?",
+        (note_id, user["id"])
+    ).fetchall()
+    for attachment in attachments:
+        path = NOTE_ATTACHMENTS_DIR / attachment["stored_filename"]
+        if path.exists():
+            path.unlink()
+    db.execute("DELETE FROM note_attachments WHERE note_id=? AND user_id=?", (note_id, user["id"]))
+    db.execute("DELETE FROM note_tags WHERE note_id=?", (note_id,))
+    cur = db.execute("DELETE FROM notes WHERE id=? AND (user_id=? OR user_id IS NULL)", (note_id, user["id"]))
+    db.commit()
+    db.close()
+    if cur.rowcount == 0:
+        raise HTTPException(404, "Note introuvable")
+    return {"ok": True}
+
+@app.put("/api/notes/{note_id}/favorite")
+def toggle_note_favorite(note_id: str, user: dict = Depends(get_current_user)):
+    db = get_db()
+    row = db.execute(
+        "SELECT is_favorite FROM notes WHERE id=? AND (user_id=? OR user_id IS NULL)",
+        (note_id, user["id"])
+    ).fetchone()
+    if not row:
+        db.close()
+        raise HTTPException(404, "Note introuvable")
+    new_val = 0 if (row["is_favorite"] or 0) else 1
+    db.execute("UPDATE notes SET is_favorite=? WHERE id=?", (new_val, note_id))
+    db.commit()
+    db.close()
+    return {"ok": True, "is_favorite": new_val == 1}
+
+@app.put("/api/notes/{note_id}/pin")
+def toggle_note_pin(note_id: str, user: dict = Depends(get_current_user)):
+    db = get_db()
+    row = db.execute(
+        "SELECT is_pinned FROM notes WHERE id=? AND (user_id=? OR user_id IS NULL)",
+        (note_id, user["id"])
+    ).fetchone()
+    if not row:
+        db.close()
+        raise HTTPException(404, "Note introuvable")
+    new_val = 0 if (row["is_pinned"] or 0) else 1
+    db.execute("UPDATE notes SET is_pinned=? WHERE id=?", (new_val, note_id))
+    db.commit()
+    db.close()
+    return {"ok": True, "is_pinned": new_val == 1}
+
+@app.post("/api/notes/{note_id}/lock")
+def lock_note(note_id: str, data: NoteLock, user: dict = Depends(get_current_user)):
+    _require_note_pin(data.pin)
+    db = get_db()
+    cur = db.execute(
+        "UPDATE notes SET pin_hash=? WHERE id=? AND (user_id=? OR user_id IS NULL)",
+        (hash_pin(data.pin), note_id, user["id"])
+    )
+    db.commit()
+    db.close()
+    if cur.rowcount == 0:
+        raise HTTPException(404, "Note introuvable")
+    return {"ok": True}
+
+@app.post("/api/notes/{note_id}/unlock")
+def unlock_note(note_id: str, data: NoteLock, user: dict = Depends(get_current_user)):
+    _require_note_pin(data.pin)
+    db = get_db()
+    row = db.execute(
+        "SELECT pin_hash FROM notes WHERE id=? AND (user_id=? OR user_id IS NULL)",
+        (note_id, user["id"])
+    ).fetchone()
+    db.close()
+    if not row:
+        raise HTTPException(404, "Note introuvable")
+    if not row["pin_hash"]:
+        return {"ok": True}
+    if hash_pin(data.pin) != row["pin_hash"]:
+        raise HTTPException(401, "PIN incorrect")
+    return {"ok": True}
+
+@app.post("/api/notes/{note_id}/remove-lock")
+def remove_note_lock(note_id: str, data: NoteLock, user: dict = Depends(get_current_user)):
+    _require_note_pin(data.pin)
+    db = get_db()
+    row = db.execute(
+        "SELECT pin_hash FROM notes WHERE id=? AND (user_id=? OR user_id IS NULL)",
+        (note_id, user["id"])
+    ).fetchone()
+    if not row:
+        db.close()
+        raise HTTPException(404, "Note introuvable")
+    if not row["pin_hash"]:
+        db.close()
+        return {"ok": True}
+    if hash_pin(data.pin) != row["pin_hash"]:
+        db.close()
+        raise HTTPException(401, "PIN incorrect")
+    db.execute("UPDATE notes SET pin_hash=NULL WHERE id=?", (note_id,))
     db.commit()
     db.close()
     return {"ok": True}
+
+@app.get("/api/notes/{note_id}/backlinks")
+def note_backlinks(note_id: str, user: dict = Depends(get_current_user)):
+    db = get_db()
+    current = db.execute(
+        "SELECT id, title FROM notes WHERE id=? AND (user_id=? OR user_id IS NULL)",
+        (note_id, user["id"])
+    ).fetchone()
+    if not current:
+        db.close()
+        raise HTTPException(404, "Note introuvable")
+
+    title = (current["title"] or "").strip()
+    if not title:
+        db.close()
+        return []
+
+    encoded_title = quote(title, safe="")
+    like_wikilink = f"%[[{title}]]%"
+    like_uri_plain = f"%toutienote://note/{title}%"
+    like_uri_encoded = f"%toutienote://note/{encoded_title}%"
+
+    rows = db.execute(
+        """
+        SELECT * FROM notes
+        WHERE id <> ?
+          AND (user_id=? OR user_id IS NULL)
+          AND (
+              content LIKE ? COLLATE NOCASE
+              OR content LIKE ? COLLATE NOCASE
+              OR content LIKE ? COLLATE NOCASE
+          )
+        ORDER BY COALESCE(is_pinned,0) DESC, COALESCE(is_favorite,0) DESC, updated_at DESC
+        """,
+        (note_id, user["id"], like_wikilink, like_uri_plain, like_uri_encoded)
+    ).fetchall()
+    payload = [_serialize_note(r, db) for r in rows]
+    db.close()
+    return payload
+
+@app.get("/api/tags")
+def list_tags(user: dict = Depends(get_current_user)):
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT t.name, COUNT(nt.note_id) AS note_count
+        FROM tags t
+        LEFT JOIN note_tags nt ON nt.tag_id = t.id
+        WHERE t.user_id = ?
+        GROUP BY t.id, t.name
+        ORDER BY LOWER(t.name) ASC
+        """,
+        (user["id"],)
+    ).fetchall()
+    db.close()
+    return [{"name": row["name"], "note_count": row["note_count"]} for row in rows]
+
+@app.post("/api/tags")
+def create_tag(data: dict, user: dict = Depends(get_current_user)):
+    raw_name = (data or {}).get("name", "")
+    name = normalize_tag(raw_name)
+    if not name:
+        raise HTTPException(400, "Nom de tag invalide")
+    db = get_db()
+    existing = db.execute(
+        "SELECT id, name FROM tags WHERE user_id=? AND name=?",
+        (user["id"], name)
+    ).fetchone()
+    if existing:
+        db.close()
+        return {"id": existing["id"], "name": existing["name"]}
+    tag_id = str(uuid.uuid4())
+    now = datetime.utcnow().isoformat()
+    db.execute(
+        "INSERT INTO tags (id, user_id, name, created_at) VALUES (?,?,?,?)",
+        (tag_id, user["id"], name, now)
+    )
+    db.commit()
+    db.close()
+    return {"id": tag_id, "name": name}
+
+@app.put("/api/notes/{note_id}/tags")
+def update_note_tags(note_id: str, data: NoteTagsUpdate, user: dict = Depends(get_current_user)):
+    db = get_db()
+    row = db.execute(
+        "SELECT id FROM notes WHERE id=? AND (user_id=? OR user_id IS NULL)",
+        (note_id, user["id"])
+    ).fetchone()
+    if not row:
+        db.close()
+        raise HTTPException(404, "Note introuvable")
+    set_note_tags(db, note_id, user["id"], data.tags)
+    db.commit()
+    tags = get_note_tags(db, note_id)
+    db.close()
+    return {"ok": True, "tags": tags}
+
+@app.get("/api/notes/{note_id}/attachments")
+def list_note_attachments(note_id: str, user: dict = Depends(get_current_user)):
+    db = get_db()
+    note = db.execute(
+        "SELECT id FROM notes WHERE id=? AND (user_id=? OR user_id IS NULL)",
+        (note_id, user["id"])
+    ).fetchone()
+    if not note:
+        db.close()
+        raise HTTPException(404, "Note introuvable")
+    rows = db.execute(
+        """
+        SELECT * FROM note_attachments
+        WHERE note_id=? AND user_id=?
+        ORDER BY created_at ASC
+        """,
+        (note_id, user["id"])
+    ).fetchall()
+    db.close()
+    return [serialize_note_attachment(row) for row in rows]
+
+@app.post("/api/notes/{note_id}/attachments")
+async def upload_note_attachment(note_id: str, file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    db = get_db()
+    note = db.execute(
+        "SELECT id FROM notes WHERE id=? AND (user_id=? OR user_id IS NULL)",
+        (note_id, user["id"])
+    ).fetchone()
+    if not note:
+        db.close()
+        raise HTTPException(404, "Note introuvable")
+
+    original_name = Path(file.filename or "attachment.bin").name
+    ext = Path(original_name).suffix.lower()
+    attachment_id = str(uuid.uuid4())
+    stored_filename = f"{attachment_id}{ext}"
+    dest = NOTE_ATTACHMENTS_DIR / stored_filename
+
+    data = await file.read()
+    if not data:
+        db.close()
+        raise HTTPException(400, "Fichier vide")
+
+    with open(dest, "wb") as output:
+        output.write(data)
+
+    content_type = (file.content_type or "").lower()
+    if content_type.startswith("image/"):
+        media_type = "image"
+    elif content_type.startswith("video/"):
+        media_type = "video"
+    else:
+        media_type = "file"
+
+    now = datetime.utcnow().isoformat()
+    db.execute(
+        """
+        INSERT INTO note_attachments (
+            id, note_id, user_id, filename, stored_filename, media_type, size, created_at
+        ) VALUES (?,?,?,?,?,?,?,?)
+        """,
+        (attachment_id, note_id, user["id"], original_name, stored_filename, media_type, len(data), now)
+    )
+    db.commit()
+    row = db.execute("SELECT * FROM note_attachments WHERE id=?", (attachment_id,)).fetchone()
+    db.close()
+    return serialize_note_attachment(row)
+
+@app.delete("/api/notes/{note_id}/attachments/{attachment_id}")
+def delete_note_attachment(note_id: str, attachment_id: str, user: dict = Depends(get_current_user)):
+    db = get_db()
+    row = db.execute(
+        """
+        SELECT * FROM note_attachments
+        WHERE id=? AND note_id=? AND user_id=?
+        """,
+        (attachment_id, note_id, user["id"])
+    ).fetchone()
+    if not row:
+        db.close()
+        raise HTTPException(404, "Piece jointe introuvable")
+    path = NOTE_ATTACHMENTS_DIR / row["stored_filename"]
+    if path.exists():
+        path.unlink()
+    db.execute("DELETE FROM note_attachments WHERE id=?", (attachment_id,))
+    db.commit()
+    db.close()
+    return {"ok": True}
+
+@app.get("/api/notes/attachments/{stored_filename}")
+def get_note_attachment(stored_filename: str):
+    path = NOTE_ATTACHMENTS_DIR / stored_filename
+    if not path.exists():
+        raise HTTPException(404, "Fichier introuvable")
+    return FileResponse(str(path))
 
 # ══════════════════════════════════════════════════════════════════════════════
 # VAULT — PIN
