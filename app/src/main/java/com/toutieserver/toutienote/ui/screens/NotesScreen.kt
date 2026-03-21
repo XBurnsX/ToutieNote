@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
 import androidx.compose.material.pullrefresh.pullRefresh
@@ -43,21 +44,23 @@ fun NotesScreen(
     vaultVm: VaultViewModel = viewModel(),
     onNoteClick: (Note?) -> Unit,
     onVaultOpen: () -> Unit,
-    onLogout: () -> Unit = {},
+    onSettings:  () -> Unit = {},
+    onLogout:    () -> Unit = {},
 ) {
-    val notes by notesVm.notes.collectAsState()
-    val loading by notesVm.loading.collectAsState()
+    val notes    by notesVm.notes.collectAsState()
+    val loading  by notesVm.loading.collectAsState()
     val pinExists by vaultVm.pinExists.collectAsState()
     val vaultError by vaultVm.error.collectAsState()
+    val accentColor = LocalAccentColor.current
 
-    var selectedId by remember { mutableStateOf<String?>(null) }
-    var showPin by remember { mutableStateOf(false) }
+    var selectedId       by remember { mutableStateOf<String?>(null) }
+    var showPin          by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf<Note?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
 
-    var searchQuery by remember { mutableStateOf("") }
+    var searchQuery  by remember { mutableStateOf("") }
     var isRefreshing by remember { mutableStateOf(false) }
-    var showMenu by remember { mutableStateOf(false) }
+    var showMenu     by remember { mutableStateOf(false) }
 
     val filteredNotes = remember(notes, searchQuery) {
         if (searchQuery.isBlank()) notes
@@ -69,7 +72,7 @@ fun NotesScreen(
         }
     }
 
-    var tapCount by remember { mutableIntStateOf(0) }
+    var tapCount   by remember { mutableIntStateOf(0) }
     var lastTapTime by remember { mutableLongStateOf(0L) }
 
     LaunchedEffect(vaultError) {
@@ -103,18 +106,18 @@ fun NotesScreen(
 
     if (showPin && pinExists != null) {
         PinDialog(
-            mode = if (pinExists == true) PinMode.VERIFY else PinMode.SETUP,
+            mode     = if (pinExists == true) PinMode.VERIFY else PinMode.SETUP,
             onSuccess = { showPin = false; onVaultOpen() },
             onDismiss = { showPin = false },
-            onVerify = { pin, ok, fail -> vaultVm.verifyPin(pin, ok, fail) },
-            onSetup  = { pin, ok -> vaultVm.setupPin(pin, ok) },
+            onVerify  = { pin, ok, fail -> vaultVm.verifyPin(pin, ok, fail) },
+            onSetup   = { pin, ok -> vaultVm.setupPin(pin, ok) },
         )
     }
 
     showDeleteDialog?.let { note ->
         AlertDialog(
             onDismissRequest = { showDeleteDialog = null },
-            containerColor = SurfaceColor,
+            containerColor   = SurfaceColor,
             title = { Text("Supprimer cette note?") },
             text  = { Text("Cette action est irréversible.", color = MutedColor, fontSize = 13.sp) },
             confirmButton = {
@@ -133,7 +136,7 @@ fun NotesScreen(
 
     Scaffold(
         containerColor = BgColor,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost   = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
@@ -146,20 +149,36 @@ fun NotesScreen(
                             )
                             .padding(vertical = 8.dp, horizontal = 4.dp)
                     ) {
-                        Text("NOTES", fontFamily = FontFamily.Monospace,
-                            fontSize = 13.sp, color = MutedColor, letterSpacing = 3.sp)
+                        Text(
+                            "NOTES",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 13.sp,
+                            color = MutedColor,
+                            letterSpacing = 3.sp
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceColor),
                 actions = {
+                    // Bouton Settings
+                    IconButton(onClick = onSettings) {
+                        Icon(Icons.Outlined.Settings, "Paramètres", tint = MutedColor)
+                    }
+                    // Menu 3 points
                     Box {
                         IconButton(onClick = { showMenu = true }) {
                             Icon(Icons.Default.MoreVert, "Menu", tint = TextColor)
                         }
                         DropdownMenu(
                             expanded = showMenu,
-                            onDismissRequest = { showMenu = false }
+                            onDismissRequest = { showMenu = false },
+                            containerColor = SurfaceColor,
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("Paramètres", color = TextColor) },
+                                onClick = { showMenu = false; onSettings() }
+                            )
+                            HorizontalDivider(color = BorderColor)
                             DropdownMenuItem(
                                 text = { Text("Déconnexion", color = DangerColor) },
                                 onClick = {
@@ -175,10 +194,10 @@ fun NotesScreen(
         },
         floatingActionButton = {
             FloatingActionButton(
-                onClick = { onNoteClick(null) },
-                containerColor = AccentColor,
-                contentColor = BgColor,
-                shape = RoundedCornerShape(16.dp),
+                onClick        = { onNoteClick(null) },
+                containerColor = accentColor,
+                contentColor   = BgColor,
+                shape          = RoundedCornerShape(16.dp),
             ) {
                 Icon(Icons.Default.Add, contentDescription = "Nouvelle note")
             }
@@ -187,24 +206,24 @@ fun NotesScreen(
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             AnimatedVisibility(
                 visible = notes.isNotEmpty(),
-                enter = fadeIn() + slideInVertically(),
-                exit = fadeOut()
+                enter   = fadeIn() + slideInVertically(),
+                exit    = fadeOut()
             ) {
                 OutlinedTextField(
-                    value = searchQuery,
+                    value         = searchQuery,
                     onValueChange = { searchQuery = it },
-                    modifier = Modifier
+                    modifier      = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     placeholder = { Text("Rechercher...", color = MutedColor, fontSize = 14.sp) },
-                    singleLine = true,
+                    singleLine  = true,
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = TextColor,
-                        unfocusedTextColor = TextColor,
-                        focusedBorderColor = AccentColor.copy(alpha = 0.6f),
-                        unfocusedBorderColor = BorderColor,
-                        cursorColor = AccentColor,
-                        focusedContainerColor = Surface2Color.copy(alpha = 0.5f),
+                        focusedTextColor        = TextColor,
+                        unfocusedTextColor      = TextColor,
+                        focusedBorderColor      = accentColor.copy(alpha = 0.6f),
+                        unfocusedBorderColor    = BorderColor,
+                        cursorColor             = accentColor,
+                        focusedContainerColor   = Surface2Color.copy(alpha = 0.5f),
                         unfocusedContainerColor = Surface2Color.copy(alpha = 0.3f),
                     ),
                     shape = RoundedCornerShape(12.dp),
@@ -229,9 +248,9 @@ fun NotesScreen(
                         Spacer(Modifier.height(20.dp))
                         Text(
                             "Aucune note",
-                            color = TextColor,
+                            color      = TextColor,
                             fontFamily = FontFamily.Monospace,
-                            fontSize = 16.sp,
+                            fontSize   = 16.sp,
                             fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
                         )
                         Spacer(Modifier.height(8.dp))
@@ -240,14 +259,14 @@ fun NotesScreen(
                                 "Créez votre première note pour commencer"
                             else
                                 "Aucun résultat pour \"$searchQuery\"",
-                            color = MutedColor,
+                            color    = MutedColor,
                             fontSize = 13.sp
                         )
                         Spacer(Modifier.height(24.dp))
                         Button(
                             onClick = { onNoteClick(null) },
-                            colors = ButtonDefaults.buttonColors(containerColor = AccentColor),
-                            shape = RoundedCornerShape(12.dp),
+                            colors  = ButtonDefaults.buttonColors(containerColor = accentColor),
+                            shape   = RoundedCornerShape(12.dp),
                             elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
                         ) {
                             Text("Créer une note", fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
@@ -257,34 +276,35 @@ fun NotesScreen(
                         val refreshState = rememberPullRefreshState(isRefreshing, { onRefresh() })
                         Box(modifier = Modifier.fillMaxSize().pullRefresh(refreshState)) {
                             LazyColumn(
-                                modifier = Modifier.fillMaxSize(),
+                                modifier       = Modifier.fillMaxSize(),
                                 contentPadding = PaddingValues(top = 8.dp, bottom = 80.dp)
                             ) {
                                 itemsIndexed(filteredNotes, key = { _, note -> note.id }) { index, note ->
                                     if (index > 0) {
                                         HorizontalDivider(
-                                            color = BorderColor,
-                                            modifier = Modifier.padding(horizontal = 16.dp),
+                                            color     = BorderColor,
+                                            modifier  = Modifier.padding(horizontal = 16.dp),
                                             thickness = 1.dp
                                         )
                                     }
                                     NoteItem(
-                                        note = note,
+                                        note       = note,
                                         isSelected = selectedId == note.id,
-                                        onClick = { selectedId = note.id; onNoteClick(note) },
+                                        onClick    = { selectedId = note.id; onNoteClick(note) },
                                         onLongClick = { showDeleteDialog = note },
                                     )
                                 }
                             }
                             PullRefreshIndicator(
                                 refreshing = isRefreshing,
-                                state = refreshState,
-                                modifier = Modifier.align(Alignment.TopCenter),
+                                state      = refreshState,
+                                modifier   = Modifier.align(Alignment.TopCenter),
+                                backgroundColor = SurfaceColor,
+                                contentColor    = accentColor,
                             )
                         }
                     }
                 }
-
             }
         }
     }

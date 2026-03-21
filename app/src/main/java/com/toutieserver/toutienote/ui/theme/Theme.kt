@@ -2,22 +2,12 @@ package com.toutieserver.toutienote.ui.theme
 
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
-
-private val DarkColorScheme = darkColorScheme(
-    primary          = AccentColor,
-    background       = BgColor,
-    surface          = SurfaceColor,
-    onBackground     = TextColor,
-    onSurface        = TextColor,
-    error            = DangerColor,
-    inverseSurface   = Surface2Color,
-    inverseOnSurface = TextColor,
-)
 
 val AppTypography = Typography(
     bodyLarge  = TextStyle(fontFamily = FontFamily.Default, fontSize = 15.sp, color = TextColor, lineHeight = 24.sp),
@@ -28,10 +18,26 @@ val AppTypography = Typography(
 )
 
 @Composable
-fun ToutieNoteTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = DarkColorScheme,
-        typography  = AppTypography,
-        content     = content,
+fun ToutieNoteTheme(
+    accentColor: Color = AccentColor,
+    content: @Composable () -> Unit
+) {
+    val colorScheme = darkColorScheme(
+        primary          = accentColor,
+        background       = BgColor,
+        surface          = SurfaceColor,
+        onBackground     = TextColor,
+        onSurface        = TextColor,
+        error            = DangerColor,
+        inverseSurface   = Surface2Color,
+        inverseOnSurface = TextColor,
     )
+
+    CompositionLocalProvider(LocalAccentColor provides accentColor) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography  = AppTypography,
+            content     = content,
+        )
+    }
 }

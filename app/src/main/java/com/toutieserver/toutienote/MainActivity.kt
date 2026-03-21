@@ -13,30 +13,24 @@ import com.toutieserver.toutienote.data.models.Photo
 import com.toutieserver.toutienote.ui.components.PinDialog
 import com.toutieserver.toutienote.ui.components.PinMode
 import com.toutieserver.toutienote.ui.screens.*
+import com.toutieserver.toutienote.ui.theme.ThemeManager
 import com.toutieserver.toutienote.ui.theme.ToutieNoteTheme
 import com.toutieserver.toutienote.viewmodels.AuthViewModel
 import com.toutieserver.toutienote.viewmodels.NotesViewModel
 import com.toutieserver.toutienote.viewmodels.VaultViewModel
-import java.io.File
 
 sealed class Screen {
     data class NoteEdit(val note: com.toutieserver.toutienote.data.models.Note?) : Screen()
-    object Notes : Screen()
-    object Albums : Screen()
+    object Notes    : Screen()
+    object Albums   : Screen()
+    object Settings : Screen()
     data class AlbumPhotos(val album: Album) : Screen()
-    data class PhotoFullscreen(
-        val initialIndex: Int,
-        val album: Album,
-    ) : Screen()
-    data class PhotoEdit(
-        val photo: Photo,
-        val pageIndex: Int,
-        val album: Album,
-    ) : Screen()
+    data class PhotoFullscreen(val initialIndex: Int, val album: Album) : Screen()
+    data class PhotoEdit(val photo: Photo, val pageIndex: Int, val album: Album) : Screen()
     data class Slideshow(val photos: List<Photo>, val album: Album) : Screen()
     data class Duplicates(val albumId: String?, val album: Album?) : Screen()
     data class GalleryPicker(val album: Album) : Screen()
-    object Login : Screen()
+    object Login    : Screen()
     object Register : Screen()
 }
 
@@ -46,23 +40,33 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         AuthRepository.init(applicationContext)
         setContent {
-            ToutieNoteTheme {
-                AppNavigation()
+            // Charger la couleur accent depuis SharedPreferences
+            var accentColor by remember {
+                mutableStateOf(ThemeManager.getAccentColor(applicationContext))
+            }
+            ToutieNoteTheme(accentColor = accentColor) {
+                AppNavigation(
+                    onAccentChanged = { accentColor = it }
+                )
             }
         }
     }
 }
 
 @Composable
-fun AppNavigation() {
+fun AppNavigation(
+    onAccentChanged: (androidx.compose.ui.graphics.Color) -> Unit = {},
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val authVm: AuthViewModel = viewModel()
+    val authVm: AuthViewModel   = viewModel()
     val notesVm: NotesViewModel = viewModel()
     val vaultVm: VaultViewModel = viewModel()
 
-    var screen by remember { mutableStateOf<Screen>(
-        if (AuthRepository.isLoggedIn()) Screen.Notes else Screen.Login
-    ) }
+    var screen by remember {
+        mutableStateOf<Screen>(
+            if (AuthRepository.isLoggedIn()) Screen.Notes else Screen.Login
+        )
+    }
     val unlockedAlbums = remember { mutableStateListOf<String>() }
     var pendingLockedAlbum by remember { mutableStateOf<Album?>(null) }
 
@@ -76,44 +80,51 @@ fun AppNavigation() {
                 screen = Screen.AlbumPhotos(album)
             },
             onDismiss = { pendingLockedAlbum = null },
-            onVerify = { pin, ok, fail ->
-                vaultVm.verifyAlbumLock(album.id, pin, ok, fail)
-            },
-            onSetup = { _, _ -> },
+            onVerify  = { pin, ok, fail -> vaultVm.verifyAlbumLock(album.id, pin, ok, fail) },
+            onSetup   = { _, _ -> },
         )
     }
 
     when (val s = screen) {
         is Screen.Login -> LoginScreen(
             vm = authVm,
-            onLoginSuccess = { screen = Screen.Notes },
+            onLoginSuccess  = { screen = Screen.Notes },
             onRegisterClick = { screen = Screen.Register },
         )
         is Screen.Register -> RegisterScreen(
             vm = authVm,
             onRegisterSuccess = { screen = Screen.Notes },
-            onLoginClick = { screen = Screen.Login },
+            onLoginClick      = { screen = Screen.Login },
         )
         is Screen.Notes -> NotesScreen(
-            notesVm = notesVm,
-            vaultVm = vaultVm,
+            notesVm     = notesVm,
+            vaultVm     = vaultVm,
             onNoteClick = { note -> screen = Screen.NoteEdit(note) },
             onVaultOpen = { screen = Screen.Albums },
-            onLogout = { screen = Screen.Login },
+            onSettings  = { screen = Screen.Settings },
+            onLogout    = { screen = Screen.Login },
         )
+        is Screen.Settings -> {
+            BackHandler { screen = Screen.Notes }
+            SettingsScreen(
+                onBack           = { screen = Screen.Notes },
+                onLogout         = { screen = Screen.Login },
+                onAccentChanged  = onAccentChanged,
+            )
+        }
         is Screen.NoteEdit -> {
             BackHandler { screen = Screen.Notes }
             NoteEditScreen(
-                note = s.note,
-                vm = notesVm,
-                onBack = { screen = Screen.Notes },
+                note    = s.note,
+                vm      = notesVm,
+                onBack  = { screen = Screen.Notes },
             )
         }
         is Screen.Albums -> {
             BackHandler { screen = Screen.Notes }
             AlbumsListScreen(
-                vm = vaultVm,
-                onLogout = { screen = Screen.Login },
+                vm           = vaultVm,
+                onLogout     = { screen = Screen.Login },
                 onAlbumClick = { album ->
                     if (album.isLocked && album.id !in unlockedAlbums) {
                         pendingLockedAlbum = album
@@ -122,36 +133,33 @@ fun AppNavigation() {
                     }
                 },
                 onDuplicates = { screen = Screen.Duplicates(null, null) },
-                onBack = { screen = Screen.Notes },
+                onBack       = { screen = Screen.Notes },
             )
         }
         is Screen.AlbumPhotos -> {
             BackHandler { screen = Screen.Albums }
-
             val photos by vaultVm.photos.collectAsState()
-
             AlbumPhotosScreen(
-                album = s.album,
-                vm = vaultVm,
-                onPhotoClick = { photo ->
+                album            = s.album,
+                vm               = vaultVm,
+                onPhotoClick     = { photo ->
                     val index = photos.indexOfFirst { it.id == photo.id }.coerceAtLeast(0)
                     screen = Screen.PhotoFullscreen(index, s.album)
                 },
-                onSlideshow = { slidePhotos -> screen = Screen.Slideshow(slidePhotos, s.album) },
-                onDuplicates = { screen = Screen.Duplicates(s.album.id, s.album) },
+                onSlideshow      = { slidePhotos -> screen = Screen.Slideshow(slidePhotos, s.album) },
+                onDuplicates     = { screen = Screen.Duplicates(s.album.id, s.album) },
                 onImportFromGallery = { screen = Screen.GalleryPicker(s.album) },
-                onBack = { screen = Screen.Albums },
+                onBack           = { screen = Screen.Albums },
             )
         }
         is Screen.PhotoFullscreen -> {
             BackHandler { screen = Screen.AlbumPhotos(s.album) }
             PhotoFullscreenScreen(
                 initialIndex = s.initialIndex,
-                vm = vaultVm,
-                albumId = s.album.id,
-                onBack = { screen = Screen.AlbumPhotos(s.album) },
-                onEdit = { photo ->
-                    // Passer le pageIndex actuel pour revenir au même endroit après crop
+                vm           = vaultVm,
+                albumId      = s.album.id,
+                onBack       = { screen = Screen.AlbumPhotos(s.album) },
+                onEdit       = { photo ->
                     val photos = vaultVm.photos.value
                     val idx = photos.indexOfFirst { it.id == photo.id }.coerceAtLeast(0)
                     screen = Screen.PhotoEdit(photo, idx, s.album)
@@ -161,17 +169,12 @@ fun AppNavigation() {
         is Screen.PhotoEdit -> {
             BackHandler { screen = Screen.PhotoFullscreen(s.pageIndex, s.album) }
             PhotoEditScreen(
-                photo = s.photo,
+                photo          = s.photo,
                 localImageFile = null,
-                vm = vaultVm,
-                onBack = {
-                    // Annulé → retour au pager à la même position
-                    screen = Screen.PhotoFullscreen(s.pageIndex, s.album)
-                },
-                onCropSaved = { _, localFile, _ ->
+                vm             = vaultVm,
+                onBack         = { screen = Screen.PhotoFullscreen(s.pageIndex, s.album) },
+                onCropSaved    = { _, localFile, _ ->
                     localFile.delete()
-                    // Crop sauvegardé → retour au pager à la même position
-                    // vm.photos est déjà mis à jour par uploadCroppedPhoto (replacePhoto)
                     screen = Screen.PhotoFullscreen(s.pageIndex, s.album)
                 },
             )
@@ -187,9 +190,9 @@ fun AppNavigation() {
             val backScreen = if (s.album != null) Screen.AlbumPhotos(s.album) else Screen.Albums
             BackHandler { screen = backScreen }
             DuplicatesScreen(
-                vm = vaultVm,
-                albumId = s.albumId,
-                onBack = { screen = backScreen },
+                vm       = vaultVm,
+                albumId  = s.albumId,
+                onBack   = { screen = backScreen },
             )
         }
         is Screen.GalleryPicker -> {
