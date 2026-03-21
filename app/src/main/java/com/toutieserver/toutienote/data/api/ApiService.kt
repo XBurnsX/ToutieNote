@@ -59,6 +59,20 @@ object ApiService {
         return if (obj.isNull(key)) null else obj.optString(key)
     }
 
+    private fun noteFromJson(obj: JSONObject): Note {
+        return Note(
+            id         = obj.getString("id"),
+            title      = obj.optString("title"),
+            content    = obj.optString("content"),
+            updatedAt  = obj.optString("updated_at"),
+            isHidden   = obj.optInt("is_hidden",   0) == 1,
+            isPinned   = obj.optInt("is_pinned",   0) == 1,
+            isFavorite = obj.optInt("is_favorite", 0) == 1,
+            isLocked   = obj.optBoolean("is_locked", false),
+            colorTag   = optNullableString(obj, "color_tag"),
+        )
+    }
+
     // ── Auth ────────────────────────────────────────────────────
     data class AuthResponse(val token: String, val user_id: String, val username: String)
 
@@ -85,19 +99,45 @@ object ApiService {
         val req = okhttp3.Request.Builder().url("$base/api/notes").get().build()
         val body = executeForBody(req)
         val arr = JSONArray(body)
+        return (0 until arr.length()).map { i -> noteFromJson(arr.getJSONObject(i)) }
+    }
+
+    fun getNoteById(id: String): Note {
+        val req = okhttp3.Request.Builder().url("$base/api/notes/$id").get().build()
+        val body = executeForBody(req)
+        return noteFromJson(JSONObject(body))
+    }
+
+    fun searchNotes(q: String): List<Note> {
+        val req = okhttp3.Request.Builder()
+            .url("$base/api/notes/search?q=${java.net.URLEncoder.encode(q, "UTF-8")}")
+            .get().build()
+        val body = executeForBody(req)
+        val arr = JSONArray(body)
         return (0 until arr.length()).map { i ->
             val obj = arr.getJSONObject(i)
-            Note(obj.getString("id"), obj.optString("title"), obj.optString("content"), obj.optString("updated_at"))
+            Note(id = obj.getString("id"), title = obj.optString("title"),
+                 content = "", updatedAt = obj.optString("updated_at"))
         }
     }
 
-    fun createNote(title: String, content: String): Note {
-        val json = JSONObject().put("title", title).put("content", content).toString()
-        val req = okhttp3.Request.Builder().url("$base/api/notes")
-            .post(json.toRequestBody(JSON)).build()
+    fun getBacklinks(noteId: String): List<Note> {
+        val req = okhttp3.Request.Builder().url("$base/api/notes/$noteId/backlinks").get().build()
         val body = executeForBody(req)
-        val obj = JSONObject(body)
-        return Note(obj.getString("id"), obj.optString("title"), obj.optString("content"), obj.optString("updated_at"))
+        val arr = JSONArray(body)
+        return (0 until arr.length()).map { i ->
+            val obj = arr.getJSONObject(i)
+            Note(id = obj.getString("id"), title = obj.optString("title"),
+                 content = "", updatedAt = obj.optString("updated_at"))
+        }
+    }
+
+    fun createNote(title: String, content: String, hidden: Boolean = false): Note {
+        val json = JSONObject().put("title", title).put("content", content).toString()
+        val url = if (hidden) "$base/api/notes?hidden=true" else "$base/api/notes"
+        val req = okhttp3.Request.Builder().url(url).post(json.toRequestBody(JSON)).build()
+        val body = executeForBody(req)
+        return noteFromJson(JSONObject(body))
     }
 
     fun updateNote(id: String, title: String, content: String) {
@@ -110,6 +150,51 @@ object ApiService {
     fun deleteNote(id: String) {
         val req = okhttp3.Request.Builder().url("$base/api/notes/$id").delete().build()
         executeForOk(req)
+    }
+
+    // ── Notes — Favoris & Épingler ─────────────────────────────
+    data class ToggleResult(val value: Boolean)
+
+    fun toggleNoteFavorite(id: String): Boolean {
+        val req = okhttp3.Request.Builder().url("$base/api/notes/$id/favorite")
+            .put("{}".toRequestBody(JSON)).build()
+        val body = executeForBody(req)
+        return JSONObject(body).optBoolean("is_favorite", false)
+    }
+
+    fun toggleNotePin(id: String): Boolean {
+        val req = okhttp3.Request.Builder().url("$base/api/notes/$id/pin")
+            .put("{}".toRequestBody(JSON)).build()
+        val body = executeForBody(req)
+        return JSONObject(body).optBoolean("is_pinned", false)
+    }
+
+    // ── Notes — Lock ───────────────────────────────────────────
+    fun lockNote(id: String, pin: String) {
+        val json = JSONObject().put("pin", pin).toString()
+        val req = okhttp3.Request.Builder().url("$base/api/notes/$id/lock")
+            .post(json.toRequestBody(JSON)).build()
+        executeForOk(req)
+    }
+
+    fun unlockNote(id: String, pin: String): Boolean {
+        return try {
+            val json = JSONObject().put("pin", pin).toString()
+            val req = okhttp3.Request.Builder().url("$base/api/notes/$id/unlock")
+                .post(json.toRequestBody(JSON)).build()
+            val resp = client.newCall(req).execute()
+            resp.isSuccessful
+        } catch (e: Exception) { false }
+    }
+
+    fun removeNoteLock(id: String, pin: String): Boolean {
+        return try {
+            val json = JSONObject().put("pin", pin).toString()
+            val req = okhttp3.Request.Builder().url("$base/api/notes/$id/remove-lock")
+                .post(json.toRequestBody(JSON)).build()
+            val resp = client.newCall(req).execute()
+            resp.isSuccessful
+        } catch (e: Exception) { false }
     }
 
     // ── Vault PIN ──────────────────────────────────────────────
@@ -137,10 +222,7 @@ object ApiService {
     }
 
     fun changePin(oldPin: String, newPin: String) {
-        val json = JSONObject()
-            .put("old_pin", oldPin)
-            .put("new_pin", newPin)
-            .toString()
+        val json = JSONObject().put("old_pin", oldPin).put("new_pin", newPin).toString()
         val req = okhttp3.Request.Builder().url("$base/api/vault/change-pin")
             .post(json.toRequestBody(JSON)).build()
         executeForOk(req)
@@ -154,13 +236,13 @@ object ApiService {
         return (0 until arr.length()).map { i ->
             val obj = arr.getJSONObject(i)
             Album(
-                id = obj.getString("id"),
-                name = obj.getString("name"),
-                coverUrl = optNullableString(obj, "cover_url"),
-                createdAt = obj.optString("created_at"),
+                id         = obj.getString("id"),
+                name       = obj.getString("name"),
+                coverUrl   = optNullableString(obj, "cover_url"),
+                createdAt  = obj.optString("created_at"),
                 photoCount = obj.optInt("photo_count", 0),
-                isLocked = obj.optBoolean("is_locked", false),
-                sortOrder = obj.optInt("sort_order", 0)
+                isLocked   = obj.optBoolean("is_locked", false),
+                sortOrder  = obj.optInt("sort_order", 0)
             )
         }
     }
@@ -172,13 +254,13 @@ object ApiService {
         val body = executeForBody(req)
         val obj = JSONObject(body)
         return Album(
-            id = obj.getString("id"),
-            name = obj.getString("name"),
-            coverUrl = optNullableString(obj, "cover_url"),
-            createdAt = obj.optString("created_at"),
+            id         = obj.getString("id"),
+            name       = obj.getString("name"),
+            coverUrl   = optNullableString(obj, "cover_url"),
+            createdAt  = obj.optString("created_at"),
             photoCount = obj.optInt("photo_count", 0),
-            isLocked = obj.optBoolean("is_locked", false),
-            sortOrder = obj.optInt("sort_order", 0)
+            isLocked   = obj.optBoolean("is_locked", false),
+            sortOrder  = obj.optInt("sort_order", 0)
         )
     }
 
@@ -246,11 +328,8 @@ object ApiService {
 
     // ── Vault Photos ───────────────────────────────────────────
     fun getPhotos(albumId: String? = null): List<Photo> {
-        val url = if (albumId != null) {
-            "$base/api/vault/photos?album_id=$albumId"
-        } else {
-            "$base/api/vault/photos"
-        }
+        val url = if (albumId != null) "$base/api/vault/photos?album_id=$albumId"
+                  else "$base/api/vault/photos"
         val req = okhttp3.Request.Builder().url(url).get().build()
         val body = executeForBody(req)
         val arr = JSONArray(body)
@@ -258,15 +337,15 @@ object ApiService {
             val obj = arr.getJSONObject(i)
             val basePhotoUrl = obj.getString("url")
             Photo(
-                id = obj.getString("id"),
-                filename = obj.getString("filename"),
-                url = basePhotoUrl,
-                size = obj.optLong("size"),
-                createdAt = obj.optString("created_at"),
-                albumId = optNullableString(obj, "album_id"),
+                id           = obj.getString("id"),
+                filename     = obj.getString("filename"),
+                url          = basePhotoUrl,
+                size         = obj.optLong("size"),
+                createdAt    = obj.optString("created_at"),
+                albumId      = optNullableString(obj, "album_id"),
                 thumbnailUrl = obj.optString("thumbnail_url", basePhotoUrl),
-                mediaType = obj.optString("media_type", "image"),
-                favorite = (obj.optInt("favorite", 0) == 1),
+                mediaType    = obj.optString("media_type", "image"),
+                favorite     = (obj.optInt("favorite", 0) == 1),
             )
         }
     }
@@ -275,27 +354,21 @@ object ApiService {
 
     fun uploadPhoto(file: File, filename: String, albumId: String? = null): UploadResult {
         val mimeType = when {
-            filename.endsWith(".mp4", ignoreCase = true) -> "video/mp4"
-            filename.endsWith(".mov", ignoreCase = true) -> "video/quicktime"
+            filename.endsWith(".mp4",  ignoreCase = true) -> "video/mp4"
+            filename.endsWith(".mov",  ignoreCase = true) -> "video/quicktime"
             filename.endsWith(".webp", ignoreCase = true) -> "image/webp"
-            filename.endsWith(".png", ignoreCase = true) -> "image/png"
+            filename.endsWith(".png",  ignoreCase = true) -> "image/png"
             else -> "image/jpeg"
         }
-
         val bodyBuilder = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("file", filename, file.asRequestBody(mimeType.toMediaType()))
-
-        val url = if (albumId != null) {
-            "$base/api/vault/upload?album_id=$albumId"
-        } else {
-            "$base/api/vault/upload"
-        }
-
+        val url = if (albumId != null) "$base/api/vault/upload?album_id=$albumId"
+                  else "$base/api/vault/upload"
         val req = okhttp3.Request.Builder().url(url).post(bodyBuilder.build()).build()
         val body = executeForBody(req)
         val obj = JSONObject(body)
         return UploadResult(
-            photoId = obj.getString("id"),
+            photoId     = obj.getString("id"),
             duplicateOf = optNullableString(obj, "duplicate_of")
         )
     }
@@ -304,23 +377,21 @@ object ApiService {
         val body = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("file", filename, file.asRequestBody("image/*".toMediaType()))
             .build()
-
         val req = okhttp3.Request.Builder()
             .url("$base/api/vault/photo/$photoId/replace")
-            .put(body)
-            .build()
+            .put(body).build()
         val respBody = executeForBody(req)
         val obj = JSONObject(respBody)
         val basePhotoUrl = obj.getString("url")
         return Photo(
-            id = obj.getString("id"),
-            filename = obj.getString("filename"),
-            url = basePhotoUrl,
-            size = 0L,
-            createdAt = obj.optString("created_at"),
-            albumId = optNullableString(obj, "album_id"),
+            id           = obj.getString("id"),
+            filename     = obj.getString("filename"),
+            url          = basePhotoUrl,
+            size         = 0L,
+            createdAt    = obj.optString("created_at"),
+            albumId      = optNullableString(obj, "album_id"),
             thumbnailUrl = obj.optString("thumbnail_url", basePhotoUrl),
-            mediaType = obj.optString("media_type", "image")
+            mediaType    = obj.optString("media_type", "image")
         )
     }
 
@@ -359,44 +430,37 @@ object ApiService {
     }
 
     // ── Duplicate Scan ─────────────────────────────────────────
-
     data class ScanResult(val groups: List<List<Photo>>, val scanned: Int)
-    data class ScanStatus(val scanned: Int, val total: Int, val percent: Int, val done: Boolean, val groups: List<List<Photo>>, val error: String?)
+    data class ScanStatus(val scanned: Int, val total: Int, val percent: Int,
+                          val done: Boolean, val groups: List<List<Photo>>, val error: String?)
 
     private fun parsePhotoFromJson(obj: JSONObject): Photo {
         val basePhotoUrl = obj.getString("url")
         return Photo(
-            id = obj.getString("id"),
-            filename = obj.getString("filename"),
-            url = basePhotoUrl,
-            size = obj.optLong("size"),
-            createdAt = obj.optString("created_at"),
-            albumId = optNullableString(obj, "album_id"),
+            id           = obj.getString("id"),
+            filename     = obj.getString("filename"),
+            url          = basePhotoUrl,
+            size         = obj.optLong("size"),
+            createdAt    = obj.optString("created_at"),
+            albumId      = optNullableString(obj, "album_id"),
             thumbnailUrl = obj.optString("thumbnail_url", basePhotoUrl),
-            mediaType = obj.optString("media_type", "image"),
-            favorite = obj.optInt("favorite", 0) == 1
+            mediaType    = obj.optString("media_type", "image"),
+            favorite     = obj.optInt("favorite", 0) == 1
         )
     }
 
     fun getPhotoCount(albumId: String? = null): Int {
         val url = if (albumId != null) "$base/api/vault/photo-count?album_id=$albumId"
                   else "$base/api/vault/photo-count"
-        Log.d("Doublon", "B1: GET $url")
         val req = okhttp3.Request.Builder().url(url).get().build()
-        val body = executeForBody(req)
-        val count = JSONObject(body).optInt("count", 0)
-        Log.d("Doublon", "B2: photo-count response count=$count")
-        return count
+        return JSONObject(executeForBody(req)).optInt("count", 0)
     }
 
-    /** Lance un scan async, retourne (jobId, total) */
     fun startScanAsync(albumId: String? = null): Pair<String, Int> {
         val url = if (albumId != null) "$base/api/vault/scan-duplicates?album_id=$albumId"
                   else "$base/api/vault/scan-duplicates"
-        Log.d("Doublon", "ASYNC: POST $url")
         val req = okhttp3.Request.Builder().url(url)
-            .post(okhttp3.RequestBody.create(null, ByteArray(0)))
-            .build()
+            .post(okhttp3.RequestBody.create(null, ByteArray(0))).build()
         val body = executeForBody(req)
         val root = JSONObject(body)
         return Pair(root.getString("job_id"), root.optInt("total", 0))
@@ -405,12 +469,9 @@ object ApiService {
     fun scanDuplicatesSync(albumId: String? = null): ScanResult {
         val url = if (albumId != null) "$base/api/vault/scan-duplicates-sync?album_id=$albumId"
                   else "$base/api/vault/scan-duplicates-sync"
-        Log.d("Doublon", "D1: POST $url")
         val req = okhttp3.Request.Builder().url(url)
-            .post(okhttp3.RequestBody.create(null, ByteArray(0)))
-            .build()
+            .post(okhttp3.RequestBody.create(null, ByteArray(0))).build()
         val body = executeForBody(req)
-        Log.d("Doublon", "D2: sync response length=${body.length}")
         val root = JSONObject(body)
         val groups = mutableListOf<List<Photo>>()
         if (root.has("groups")) {
@@ -426,7 +487,8 @@ object ApiService {
     }
 
     fun getScanStatus(jobId: String): ScanStatus {
-        val req = okhttp3.Request.Builder().url("$base/api/vault/scan-duplicates/status?job_id=$jobId").get().build()
+        val req = okhttp3.Request.Builder()
+            .url("$base/api/vault/scan-duplicates/status?job_id=$jobId").get().build()
         val body = executeForBody(req)
         val root = JSONObject(body)
         val groups = mutableListOf<List<Photo>>()
@@ -434,19 +496,18 @@ object ApiService {
             val arr = root.getJSONArray("groups")
             for (i in 0 until arr.length()) {
                 val groupArr = arr.getJSONArray(i)
-                val group = (0 until groupArr.length()).map { j ->
+                groups.add((0 until groupArr.length()).map { j ->
                     parsePhotoFromJson(groupArr.getJSONObject(j))
-                }
-                groups.add(group)
+                })
             }
         }
         return ScanStatus(
             scanned = root.optInt("scanned", 0),
-            total = root.optInt("total", 0),
+            total   = root.optInt("total", 0),
             percent = root.optInt("percent", 0),
-            done = root.optBoolean("done", false),
-            groups = groups,
-            error = if (root.isNull("error")) null else root.getString("error")
+            done    = root.optBoolean("done", false),
+            groups  = groups,
+            error   = if (root.isNull("error")) null else root.getString("error")
         )
     }
 

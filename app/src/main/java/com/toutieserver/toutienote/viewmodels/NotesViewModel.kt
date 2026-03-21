@@ -22,7 +22,6 @@ class NotesViewModel : ViewModel() {
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error
 
-    /** Émis quand une synchro (updateNote) a réussi. L'écran peut remettre synced = true. */
     private val _syncSuccess = MutableStateFlow(false)
     val syncSuccess: StateFlow<Boolean> = _syncSuccess
 
@@ -34,8 +33,7 @@ class NotesViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             _loading.value = true
             try {
-                val list = ApiService.getNotes().sortedByDescending { it.updatedAt }
-                _notes.value = list
+                _notes.value = ApiService.getNotes()
             } catch (e: Exception) {
                 _error.value = "Erreur connexion serveur"
             }
@@ -43,11 +41,11 @@ class NotesViewModel : ViewModel() {
         }
     }
 
-    fun createNote(title: String, content: String, onCreated: (Note) -> Unit) {
+    fun createNote(title: String, content: String, hidden: Boolean = false, onCreated: (Note) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val note = ApiService.createNote(title, content)
-                _notes.value = listOf(note) + _notes.value
+                val note = ApiService.createNote(title, content, hidden)
+                if (!hidden) _notes.value = listOf(note) + _notes.value
                 viewModelScope.launch(Dispatchers.Main) { onCreated(note) }
             } catch (e: Exception) {
                 _error.value = "Erreur création note"
@@ -62,9 +60,9 @@ class NotesViewModel : ViewModel() {
             delay(1200)
             try {
                 ApiService.updateNote(id, title, content)
-                val updatedNote = _notes.value.find { it.id == id }?.copy(title = title, content = content)
-                val rest = _notes.value.filter { it.id != id }
-                _notes.value = if (updatedNote != null) listOf(updatedNote) + rest else _notes.value
+                val updated = _notes.value.find { it.id == id }?.copy(title = title, content = content)
+                val rest    = _notes.value.filter { it.id != id }
+                _notes.value = if (updated != null) listOf(updated) + rest else _notes.value
                 _syncSuccess.value = true
             } catch (e: Exception) { /* silent */ }
         }
@@ -80,6 +78,79 @@ class NotesViewModel : ViewModel() {
             } catch (e: Exception) {
                 _error.value = "Erreur suppression"
             }
+        }
+    }
+
+    fun toggleFavorite(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val newVal = ApiService.toggleNoteFavorite(id)
+                _notes.value = _notes.value.map {
+                    if (it.id == id) it.copy(isFavorite = newVal) else it
+                }
+            } catch (e: Exception) { /* silent */ }
+        }
+    }
+
+    fun togglePin(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val newVal = ApiService.toggleNotePin(id)
+                _notes.value = _notes.value.map {
+                    if (it.id == id) it.copy(isPinned = newVal) else it
+                }
+            } catch (e: Exception) { /* silent */ }
+        }
+    }
+
+    fun lockNote(id: String, pin: String, onSuccess: () -> Unit, onError: () -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                ApiService.lockNote(id, pin)
+                _notes.value = _notes.value.map {
+                    if (it.id == id) it.copy(isLocked = true) else it
+                }
+                viewModelScope.launch(Dispatchers.Main) { onSuccess() }
+            } catch (e: Exception) {
+                viewModelScope.launch(Dispatchers.Main) { onError() }
+            }
+        }
+    }
+
+    fun unlockNote(id: String, pin: String, onSuccess: () -> Unit, onError: () -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = ApiService.unlockNote(id, pin)
+            viewModelScope.launch(Dispatchers.Main) {
+                if (ok) onSuccess() else onError()
+            }
+        }
+    }
+
+    fun removeNoteLock(id: String, pin: String, onSuccess: () -> Unit, onError: () -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = ApiService.removeNoteLock(id, pin)
+            viewModelScope.launch(Dispatchers.Main) {
+                if (ok) {
+                    _notes.value = _notes.value.map {
+                        if (it.id == id) it.copy(isLocked = false) else it
+                    }
+                    onSuccess()
+                } else {
+                    onError()
+                }
+            }
+        }
+    }
+
+    fun renameNote(id: String, newTitle: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val note = _notes.value.find { it.id == id } ?: return@launch
+                ApiService.updateNote(id, newTitle, note.content)
+                _notes.value = _notes.value.map {
+                    if (it.id == id) it.copy(title = newTitle) else it
+                }
+            } catch (e: Exception) { /* silent */ }
         }
     }
 }

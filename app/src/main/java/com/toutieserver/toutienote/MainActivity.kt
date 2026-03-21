@@ -9,6 +9,7 @@ import androidx.compose.runtime.*
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.toutieserver.toutienote.data.auth.AuthRepository
 import com.toutieserver.toutienote.data.models.Album
+import com.toutieserver.toutienote.data.models.Note
 import com.toutieserver.toutienote.data.models.Photo
 import com.toutieserver.toutienote.ui.components.PinDialog
 import com.toutieserver.toutienote.ui.components.PinMode
@@ -18,9 +19,11 @@ import com.toutieserver.toutienote.ui.theme.ToutieNoteTheme
 import com.toutieserver.toutienote.viewmodels.AuthViewModel
 import com.toutieserver.toutienote.viewmodels.NotesViewModel
 import com.toutieserver.toutienote.viewmodels.VaultViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 sealed class Screen {
-    data class NoteEdit(val note: com.toutieserver.toutienote.data.models.Note?) : Screen()
+    data class NoteEdit(val note: Note?) : Screen()
     object Notes    : Screen()
     object Albums   : Screen()
     object Settings : Screen()
@@ -40,14 +43,11 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         AuthRepository.init(applicationContext)
         setContent {
-            // Charger la couleur accent depuis SharedPreferences
             var accentColor by remember {
                 mutableStateOf(ThemeManager.getAccentColor(applicationContext))
             }
             ToutieNoteTheme(accentColor = accentColor) {
-                AppNavigation(
-                    onAccentChanged = { accentColor = it }
-                )
+                AppNavigation(onAccentChanged = { accentColor = it })
             }
         }
     }
@@ -58,7 +58,8 @@ fun AppNavigation(
     onAccentChanged: (androidx.compose.ui.graphics.Color) -> Unit = {},
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val authVm: AuthViewModel   = viewModel()
+    val scope   = rememberCoroutineScope()
+    val authVm:  AuthViewModel  = viewModel()
     val notesVm: NotesViewModel = viewModel()
     val vaultVm: VaultViewModel = viewModel()
 
@@ -67,13 +68,13 @@ fun AppNavigation(
             if (AuthRepository.isLoggedIn()) Screen.Notes else Screen.Login
         )
     }
-    val unlockedAlbums = remember { mutableStateListOf<String>() }
+    val unlockedAlbums     = remember { mutableStateListOf<String>() }
     var pendingLockedAlbum by remember { mutableStateOf<Album?>(null) }
 
     // PIN dialog for locked albums
     pendingLockedAlbum?.let { album ->
         PinDialog(
-            mode = PinMode.VERIFY,
+            mode      = PinMode.VERIFY,
             onSuccess = {
                 unlockedAlbums.add(album.id)
                 pendingLockedAlbum = null
@@ -85,14 +86,40 @@ fun AppNavigation(
         )
     }
 
+    // ── Naviguer vers une note par son titre (depuis un lien interne) ──────────
+    fun navigateToNoteByTitle(title: String) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                // Chercher la note existante par titre
+                val existing = com.toutieserver.toutienote.data.api.ApiService.searchNotes(title)
+                    .firstOrNull { it.title.equals(title, ignoreCase = true) }
+                if (existing != null) {
+                    // Note existe → charger et naviguer
+                    val full = com.toutieserver.toutienote.data.api.ApiService.getNoteById(existing.id)
+                    kotlinx.coroutines.withContext(Dispatchers.Main) {
+                        screen = Screen.NoteEdit(full)
+                    }
+                } else {
+                    // Note n'existe pas → créer cachée et naviguer
+                    val newNote = com.toutieserver.toutienote.data.api.ApiService.createNote(title, "", hidden = true)
+                    kotlinx.coroutines.withContext(Dispatchers.Main) {
+                        screen = Screen.NoteEdit(newNote)
+                    }
+                }
+            } catch (e: Exception) {
+                // Silencieux — on reste sur la note courante
+            }
+        }
+    }
+
     when (val s = screen) {
         is Screen.Login -> LoginScreen(
-            vm = authVm,
+            vm              = authVm,
             onLoginSuccess  = { screen = Screen.Notes },
             onRegisterClick = { screen = Screen.Register },
         )
         is Screen.Register -> RegisterScreen(
-            vm = authVm,
+            vm                = authVm,
             onRegisterSuccess = { screen = Screen.Notes },
             onLoginClick      = { screen = Screen.Login },
         )
@@ -107,17 +134,18 @@ fun AppNavigation(
         is Screen.Settings -> {
             BackHandler { screen = Screen.Notes }
             SettingsScreen(
-                onBack           = { screen = Screen.Notes },
-                onLogout         = { screen = Screen.Login },
-                onAccentChanged  = onAccentChanged,
+                onBack          = { screen = Screen.Notes },
+                onLogout        = { screen = Screen.Login },
+                onAccentChanged = onAccentChanged,
             )
         }
         is Screen.NoteEdit -> {
             BackHandler { screen = Screen.Notes }
             NoteEditScreen(
-                note    = s.note,
-                vm      = notesVm,
-                onBack  = { screen = Screen.Notes },
+                note        = s.note,
+                vm          = notesVm,
+                onBack      = { screen = Screen.Notes },
+                onLinkClick = { title -> navigateToNoteByTitle(title) },
             )
         }
         is Screen.Albums -> {
@@ -140,16 +168,16 @@ fun AppNavigation(
             BackHandler { screen = Screen.Albums }
             val photos by vaultVm.photos.collectAsState()
             AlbumPhotosScreen(
-                album            = s.album,
-                vm               = vaultVm,
-                onPhotoClick     = { photo ->
+                album               = s.album,
+                vm                  = vaultVm,
+                onPhotoClick        = { photo ->
                     val index = photos.indexOfFirst { it.id == photo.id }.coerceAtLeast(0)
                     screen = Screen.PhotoFullscreen(index, s.album)
                 },
-                onSlideshow      = { slidePhotos -> screen = Screen.Slideshow(slidePhotos, s.album) },
-                onDuplicates     = { screen = Screen.Duplicates(s.album.id, s.album) },
+                onSlideshow         = { slidePhotos -> screen = Screen.Slideshow(slidePhotos, s.album) },
+                onDuplicates        = { screen = Screen.Duplicates(s.album.id, s.album) },
                 onImportFromGallery = { screen = Screen.GalleryPicker(s.album) },
-                onBack           = { screen = Screen.Albums },
+                onBack              = { screen = Screen.Albums },
             )
         }
         is Screen.PhotoFullscreen -> {
@@ -190,9 +218,9 @@ fun AppNavigation(
             val backScreen = if (s.album != null) Screen.AlbumPhotos(s.album) else Screen.Albums
             BackHandler { screen = backScreen }
             DuplicatesScreen(
-                vm       = vaultVm,
-                albumId  = s.albumId,
-                onBack   = { screen = backScreen },
+                vm      = vaultVm,
+                albumId = s.albumId,
+                onBack  = { screen = backScreen },
             )
         }
         is Screen.GalleryPicker -> {
