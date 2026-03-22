@@ -271,6 +271,15 @@ object ApiService {
         executeForOk(req)
     }
 
+    fun updateNoteColor(id: String, colorTag: String?): Note {
+        val payload = JSONObject()
+        payload.put("color_tag", colorTag ?: JSONObject.NULL)
+        val req = okhttp3.Request.Builder().url("$base/api/notes/$id/color")
+            .put(payload.toString().toRequestBody(JSON)).build()
+        val body = executeForBody(req)
+        return noteFromJson(JSONObject(body))
+    }
+
     fun deleteNote(id: String) {
         val req = okhttp3.Request.Builder().url("$base/api/notes/$id").delete().build()
         executeForOk(req)

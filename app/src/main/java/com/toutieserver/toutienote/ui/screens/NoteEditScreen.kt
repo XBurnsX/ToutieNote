@@ -1,10 +1,13 @@
 ﻿package com.toutieserver.toutienote.ui.screens
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -28,6 +31,7 @@ import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -38,6 +42,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.Image
@@ -79,10 +84,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -99,9 +108,11 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.toutieserver.toutienote.data.api.ApiService
 import com.toutieserver.toutienote.data.models.Note
@@ -151,6 +162,67 @@ private data class InlineToken(
     val match: MatchResult,
     val priority: Int,
 )
+
+private data class CodeStyleMatch(
+    val start: Int,
+    val endExclusive: Int,
+    val style: SpanStyle,
+)
+
+private val SupportedCodeLanguages = listOf(
+    "plaintext",
+    "kotlin",
+    "java",
+    "python",
+    "javascript",
+    "typescript",
+    "tsx",
+    "jsx",
+    "c",
+    "cpp",
+    "csharp",
+    "go",
+    "rust",
+    "swift",
+    "php",
+    "ruby",
+    "scala",
+    "dart",
+    "lua",
+    "r",
+    "sql",
+    "html",
+    "css",
+    "scss",
+    "json",
+    "yaml",
+    "xml",
+    "markdown",
+    "toml",
+    "ini",
+    "bash",
+    "shell",
+    "powershell",
+    "dockerfile",
+    "gradle",
+    "groovy",
+    "perl",
+    "haskell",
+    "elixir",
+    "erlang",
+    "ocaml",
+    "zig",
+)
+
+private val CodeBlockBackground = Color(0xFF2D2A26)
+private val CodeHeaderBackground = Color(0xFF38342F)
+private val CodeBorderColor = Color(0xFF8B857B)
+private val CodeDefaultText = Color(0xFFF5F5F5)
+private val CodeKeywordColor = Color(0xFFE5C07B)
+private val CodeStringColor = Color(0xFF98C379)
+private val CodeNumberColor = Color(0xFFD19A66)
+private val CodeCommentColor = Color(0xFF7F848E)
+private val CodeTypeColor = Color(0xFF61AFEF)
 
 private enum class TokenKind {
     IMAGE,
@@ -438,6 +510,9 @@ private fun toggleInlineStyle(
     placeholder: String,
 ): TextFieldValue {
     val token = findEnclosingToken(value, document, kind) ?: return wrapSelection(value, prefix, suffix, placeholder)
+    if (value.selection.collapsed) {
+        return value.copy(selection = TextRange(token.sourceRange.end))
+    }
     val contentRange = token.contentSourceRange()
     val content = value.text.substring(contentRange.start, contentRange.end)
     val selectionStart = (value.selection.start - contentRange.start).coerceIn(0, content.length)
@@ -511,6 +586,15 @@ private fun toggleBulletList(value: TextFieldValue): TextFieldValue {
     val nonBlankLines = lines.filter { it.isNotBlank() }
     val bulletRegex = Regex("""^[-*]\s+""")
     val orderedRegex = Regex("""^\d+\.\s+""")
+    if (nonBlankLines.isEmpty()) {
+        return replaceRange(
+            value = value,
+            start = blockRange.start,
+            end = blockRange.end,
+            replacement = "- ",
+            selection = TextRange(blockRange.start + 2)
+        )
+    }
     val updatedLines = when {
         nonBlankLines.isNotEmpty() && nonBlankLines.all { bulletRegex.containsMatchIn(it) } ->
             lines.map { line -> line.replaceFirst(bulletRegex, "") }
@@ -541,6 +625,15 @@ private fun toggleNumberedList(value: TextFieldValue): TextFieldValue {
     val nonBlankLines = lines.filter { it.isNotBlank() }
     val bulletRegex = Regex("""^[-*]\s+""")
     val orderedRegex = Regex("""^\d+\.\s+""")
+    if (nonBlankLines.isEmpty()) {
+        return replaceRange(
+            value = value,
+            start = blockRange.start,
+            end = blockRange.end,
+            replacement = "1. ",
+            selection = TextRange(blockRange.start + 3)
+        )
+    }
     val updatedLines = when {
         nonBlankLines.isNotEmpty() && nonBlankLines.all { orderedRegex.containsMatchIn(it) } ->
             lines.map { line -> line.replaceFirst(orderedRegex, "") }
@@ -596,6 +689,139 @@ private fun countMatches(text: String, query: String): Int {
     val normalized = query.trim()
     if (normalized.isEmpty()) return 0
     return Regex(Regex.escape(normalized), RegexOption.IGNORE_CASE).findAll(text).count()
+}
+
+private fun codeKeywordsFor(language: String): Set<String> =
+    when (language.lowercase()) {
+        "kotlin" -> setOf("val", "var", "fun", "class", "object", "data", "sealed", "when", "if", "else", "return", "null", "true", "false", "private", "public", "internal", "suspend", "override", "import", "package")
+        "java" -> setOf("class", "interface", "public", "private", "protected", "static", "void", "return", "new", "if", "else", "switch", "case", "null", "true", "false", "import", "package")
+        "javascript", "typescript", "jsx", "tsx" -> setOf("const", "let", "var", "function", "return", "if", "else", "switch", "case", "import", "export", "from", "async", "await", "true", "false", "null", "undefined", "class", "new")
+        "python" -> setOf("def", "class", "return", "if", "elif", "else", "for", "while", "import", "from", "as", "True", "False", "None", "async", "await", "lambda", "pass")
+        "c", "cpp", "csharp", "go", "rust", "swift", "scala", "dart", "php" -> setOf("if", "else", "return", "class", "struct", "enum", "public", "private", "static", "fn", "func", "let", "var", "const", "new", "true", "false", "null")
+        "sql" -> setOf("select", "from", "where", "join", "left", "right", "inner", "outer", "insert", "into", "update", "delete", "group", "by", "order", "limit", "and", "or", "as")
+        "html", "xml" -> setOf("div", "span", "body", "head", "meta", "script", "style", "html")
+        "json", "yaml", "toml", "ini" -> setOf("true", "false", "null")
+        "bash", "shell", "powershell" -> setOf("if", "then", "else", "fi", "for", "do", "done", "function", "return", "true", "false")
+        else -> emptySet()
+    }
+
+private fun commentPatternFor(language: String): Regex? =
+    when (language.lowercase()) {
+        "python", "yaml", "toml", "ini", "bash", "shell", "powershell", "ruby", "perl" -> Regex("""#.*$""")
+        "sql" -> Regex("""--.*$""")
+        "html", "xml" -> Regex("""<!--.*?-->""")
+        "plaintext", "json" -> null
+        else -> Regex("""//.*$""")
+    }
+
+private fun stringPatternsFor(language: String): List<Regex> =
+    when (language.lowercase()) {
+        "json" -> listOf(Regex(""""([^"\\\\]|\\\\.)*""""))
+        else -> listOf(
+            Regex(""""([^"\\\\]|\\\\.)*""""),
+            Regex("""'([^'\\\\]|\\\\.)*'""")
+        )
+    }
+
+private fun collectCodeStyleMatches(codeLine: String, language: String): List<CodeStyleMatch> {
+    if (codeLine.isEmpty()) return emptyList()
+    val matches = mutableListOf<CodeStyleMatch>()
+    val occupied = BooleanArray(codeLine.length)
+
+    fun canPlace(start: Int, endExclusive: Int): Boolean =
+        start in 0..codeLine.length && endExclusive in 0..codeLine.length &&
+            start < endExclusive &&
+            (start until endExclusive).none { occupied[it] }
+
+    fun addMatch(start: Int, endExclusive: Int, style: SpanStyle) {
+        if (!canPlace(start, endExclusive)) return
+        for (index in start until endExclusive) occupied[index] = true
+        matches.add(CodeStyleMatch(start, endExclusive, style))
+    }
+
+    stringPatternsFor(language).forEach { regex ->
+        regex.findAll(codeLine).forEach { match ->
+            addMatch(
+                start = match.range.first,
+                endExclusive = match.range.last + 1,
+                style = SpanStyle(color = CodeStringColor)
+            )
+        }
+    }
+
+    commentPatternFor(language)?.findAll(codeLine)?.forEach { match ->
+        addMatch(
+            start = match.range.first,
+            endExclusive = match.range.last + 1,
+            style = SpanStyle(color = CodeCommentColor, fontStyle = FontStyle.Italic)
+        )
+    }
+
+    Regex("""\b\d+(?:\.\d+)?\b""").findAll(codeLine).forEach { match ->
+        addMatch(
+            start = match.range.first,
+            endExclusive = match.range.last + 1,
+            style = SpanStyle(color = CodeNumberColor)
+        )
+    }
+
+    val keywords = codeKeywordsFor(language)
+    if (keywords.isNotEmpty()) {
+        val keywordPattern = Regex(
+            keywords.joinToString(prefix = """\b(""", postfix = """)\b""", separator = "|") { Regex.escape(it) },
+            setOf(RegexOption.IGNORE_CASE)
+        )
+        keywordPattern.findAll(codeLine).forEach { match ->
+            addMatch(
+                start = match.range.first,
+                endExclusive = match.range.last + 1,
+                style = SpanStyle(color = CodeKeywordColor, fontWeight = FontWeight.SemiBold)
+            )
+        }
+    }
+
+    Regex("""\b[A-Z][A-Za-z0-9_]*\b""").findAll(codeLine).forEach { match ->
+        addMatch(
+            start = match.range.first,
+            endExclusive = match.range.last + 1,
+            style = SpanStyle(color = CodeTypeColor)
+        )
+    }
+
+    return matches.sortedBy { it.start }
+}
+
+private fun buildCodeBlockInsertion(value: TextFieldValue, language: String, code: String): TextFieldValue {
+    val normalizedCode = code.replace("\r\n", "\n").trimEnd('\n')
+    val languageLabel = language.trim().ifBlank { "plaintext" }
+    val before = value.text.take(value.selection.min)
+    val after = value.text.drop(value.selection.max)
+    val needsLeadingNewline = before.isNotEmpty() && !before.endsWith('\n')
+    val needsTrailingNewline = after.isNotEmpty() && !after.startsWith('\n')
+    val replacement = buildString {
+        if (needsLeadingNewline) append('\n')
+        append("```")
+        append(languageLabel)
+        append('\n')
+        append(normalizedCode.ifBlank { "// code" })
+        append('\n')
+        append("```")
+        if (needsTrailingNewline) append('\n')
+    }
+    val selectionStart = value.selection.min + replacement.length
+    return replaceRange(value, value.selection.min, value.selection.max, replacement, TextRange(selectionStart))
+}
+
+private fun findClosingCodeFenceStart(markdown: String, searchFrom: Int): Int? {
+    var cursor = searchFrom.coerceIn(0, markdown.length)
+    while (cursor <= markdown.length) {
+        val lineEnd = markdown.indexOf('\n', startIndex = cursor).let { if (it == -1) markdown.length else it }
+        val line = markdown.substring(cursor, lineEnd)
+        if (line.trimStart().startsWith("```")) return cursor
+        if (lineEnd >= markdown.length) break
+        cursor = lineEnd + 1
+    }
+    return null
 }
 
 private fun findNextOccurrence(value: TextFieldValue, query: String): TextRange? {
@@ -875,30 +1101,173 @@ private fun buildRenderedDocument(markdown: String, accentColor: Color, linkColo
     }
 
     var lineStart = 0
-    var inCodeBlock = false
+    var codeBlockLanguage = "plaintext"
+
+    fun appendCodeLine(sourceStart: Int, sourceEndExclusive: Int, lineText: String) {
+        appendRendered(
+            renderedText = "│ ",
+            sourceStart = sourceStart,
+            sourceEndExclusive = sourceStart,
+            style = SpanStyle(
+                color = CodeBorderColor,
+                background = CodeBlockBackground,
+                fontFamily = FontFamily.Monospace,
+            ),
+            mappingSourceStart = sourceStart,
+            mappingSourceEndExclusive = sourceStart,
+        )
+        val baseCodeStyle = SpanStyle(
+            color = CodeDefaultText,
+            background = CodeBlockBackground,
+            fontFamily = FontFamily.Monospace,
+        )
+        val matches = collectCodeStyleMatches(lineText, codeBlockLanguage)
+        var cursor = 0
+        if (matches.isEmpty()) {
+            appendRendered(
+                renderedText = lineText,
+                sourceStart = sourceStart,
+                sourceEndExclusive = sourceEndExclusive,
+                style = baseCodeStyle,
+            )
+            return
+        }
+        matches.forEach { match ->
+            if (match.start > cursor) {
+                appendRendered(
+                    renderedText = lineText.substring(cursor, match.start),
+                    sourceStart = sourceStart + cursor,
+                    sourceEndExclusive = sourceStart + match.start,
+                    style = baseCodeStyle,
+                )
+            }
+            appendRendered(
+                renderedText = lineText.substring(match.start, match.endExclusive),
+                sourceStart = sourceStart + match.start,
+                sourceEndExclusive = sourceStart + match.endExclusive,
+                style = baseCodeStyle.merge(match.style),
+            )
+            cursor = match.endExclusive
+        }
+        if (cursor < lineText.length) {
+            appendRendered(
+                renderedText = lineText.substring(cursor),
+                sourceStart = sourceStart + cursor,
+                sourceEndExclusive = sourceEndExclusive,
+                style = baseCodeStyle,
+            )
+        }
+    }
+
     while (lineStart <= normalized.length) {
         val lineEnd = normalized.indexOf('\n', startIndex = lineStart).let { if (it == -1) normalized.length else it }
         val line = normalized.substring(lineStart, lineEnd)
+        if (line.trimStart().startsWith("```")) {
+            val closingFenceStart = findClosingCodeFenceStart(normalized, (lineEnd + 1).coerceAtMost(normalized.length))
+            if (closingFenceStart != null) {
+                val closingFenceEnd = normalized.indexOf('\n', startIndex = closingFenceStart).let {
+                    if (it == -1) normalized.length else it
+                }
+                val language = line.trim().removePrefix("```").trim().ifBlank { "plaintext" }
+                codeBlockLanguage = language
+                val codeStart = (lineEnd + 1).coerceAtMost(normalized.length)
+                val codeEndExclusive = closingFenceStart.coerceAtLeast(codeStart)
+
+                mapHiddenRange(lineStart, lineEnd, lineEnd)
+                appendRendered(
+                    renderedText = "╭ $language",
+                    sourceStart = lineStart,
+                    sourceEndExclusive = lineEnd,
+                    style = SpanStyle(
+                        color = CodeDefaultText,
+                        background = CodeHeaderBackground,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.SemiBold,
+                    ),
+                    mappingSourceStart = (lineStart + 3).coerceAtMost(lineEnd),
+                    mappingSourceEndExclusive = lineEnd,
+                )
+
+                if (codeStart <= codeEndExclusive) {
+                    appendRendered(
+                        renderedText = "\n",
+                        sourceStart = lineEnd.coerceAtMost(normalized.length),
+                        sourceEndExclusive = (lineEnd + 1).coerceAtMost(normalized.length),
+                        style = SpanStyle(
+                            color = CodeDefaultText,
+                            background = CodeHeaderBackground,
+                            fontFamily = FontFamily.Monospace,
+                        ),
+                    )
+
+                    var codeCursor = codeStart
+                    while (codeCursor <= codeEndExclusive) {
+                        val codeLineEnd = normalized.indexOf('\n', startIndex = codeCursor).let {
+                            if (it == -1 || it > codeEndExclusive) codeEndExclusive else it
+                        }
+                        val codeLine = normalized.substring(codeCursor, codeLineEnd)
+                        appendCodeLine(codeCursor, codeLineEnd, codeLine)
+                        if (codeLineEnd < codeEndExclusive) {
+                            appendRendered(
+                                renderedText = "\n",
+                                sourceStart = codeLineEnd,
+                                sourceEndExclusive = codeLineEnd + 1,
+                                style = SpanStyle(
+                                    color = CodeDefaultText,
+                                    background = CodeBlockBackground,
+                                    fontFamily = FontFamily.Monospace,
+                                ),
+                            )
+                            codeCursor = codeLineEnd + 1
+                        } else {
+                            break
+                        }
+                    }
+                    appendRendered(
+                        renderedText = "\n",
+                        sourceStart = closingFenceStart,
+                        sourceEndExclusive = closingFenceStart,
+                        style = SpanStyle(
+                            color = CodeDefaultText,
+                            background = CodeBlockBackground,
+                            fontFamily = FontFamily.Monospace,
+                        ),
+                        mappingSourceStart = closingFenceStart,
+                        mappingSourceEndExclusive = closingFenceStart,
+                    )
+                }
+
+                appendRendered(
+                    renderedText = "╰",
+                    sourceStart = closingFenceStart,
+                    sourceEndExclusive = closingFenceEnd,
+                    style = SpanStyle(
+                        color = CodeBorderColor,
+                        background = CodeBlockBackground,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.SemiBold,
+                    ),
+                    mappingSourceStart = closingFenceStart,
+                    mappingSourceEndExclusive = closingFenceStart,
+                )
+                mapHiddenRange(closingFenceStart, closingFenceEnd, closingFenceStart)
+
+                if (closingFenceEnd < normalized.length) {
+                    appendRendered(
+                        renderedText = "\n",
+                        sourceStart = closingFenceEnd,
+                        sourceEndExclusive = closingFenceEnd + 1,
+                        style = SpanStyle(),
+                    )
+                    lineStart = closingFenceEnd + 1
+                } else {
+                    break
+                }
+                continue
+            }
+        }
+
         when {
-            line.trimStart().startsWith("```") -> {
-                appendRendered(
-                    renderedText = line,
-                    sourceStart = lineStart,
-                    sourceEndExclusive = lineEnd,
-                    style = SpanStyle(color = MutedColor, fontFamily = FontFamily.Monospace),
-                )
-                inCodeBlock = !inCodeBlock
-            }
-
-            inCodeBlock -> {
-                appendRendered(
-                    renderedText = line,
-                    sourceStart = lineStart,
-                    sourceEndExclusive = lineEnd,
-                    style = SpanStyle(background = Surface2Color, fontFamily = FontFamily.Monospace),
-                )
-            }
-
             line.startsWith("### ") -> {
                 mapHiddenRange(lineStart, lineStart + 4, lineStart + 4)
                 val renderedStart = renderedLength
@@ -1033,6 +1402,8 @@ fun NoteEditScreen(
     var syncing by remember(note?.id) { mutableStateOf(false) }
     var synced by remember(note?.id) { mutableStateOf(note != null) }
     var isLocked by remember(note?.id) { mutableStateOf(note?.isLocked ?: false) }
+    var isPinned by remember(note?.id) { mutableStateOf(note?.isPinned ?: false) }
+    var noteColorTag by remember(note?.id) { mutableStateOf(note?.colorTag) }
     var isUnlocked by remember(note?.id) { mutableStateOf(false) }
     var readMode by remember(note?.id) { mutableStateOf(false) }
 
@@ -1045,6 +1416,7 @@ fun NoteEditScreen(
     var showSearchDialog by remember { mutableStateOf(false) }
     var showReplaceDialog by remember { mutableStateOf(false) }
     var showLinkPopup by remember { mutableStateOf(false) }
+    var showCodeDialog by remember { mutableStateOf(false) }
 
     var pinInput by remember { mutableStateOf("") }
     var pinError by remember { mutableStateOf(false) }
@@ -1053,6 +1425,8 @@ fun NoteEditScreen(
     var replaceFromInput by remember { mutableStateOf("") }
     var replaceToInput by remember { mutableStateOf("") }
     var linkInput by remember { mutableStateOf("") }
+    var selectedCodeLanguage by remember { mutableStateOf("plaintext") }
+    var codeInput by remember { mutableStateOf("") }
     var searchMatchCount by remember { mutableStateOf(0) }
 
     var backlinks by remember { mutableStateOf<List<Note>>(emptyList()) }
@@ -1080,6 +1454,7 @@ fun NoteEditScreen(
     val editorVisualTransformation = remember(renderedDocument) {
         RenderedDocumentVisualTransformation(renderedDocument)
     }
+    val noteBackgroundColor: Color = remember(noteColorTag) { editorNoteBackgroundColor(noteColorTag) }
 
     fun scheduleSyncIfNeeded() {
         val currentId = savedId ?: return
@@ -1129,10 +1504,10 @@ fun NoteEditScreen(
             updatedAt = note?.updatedAt ?: "",
             createdAt = note?.createdAt ?: (note?.updatedAt ?: ""),
             isHidden = note?.isHidden ?: false,
-            isPinned = note?.isPinned ?: false,
+            isPinned = isPinned,
             isFavorite = note?.isFavorite ?: false,
             isLocked = isLocked,
-            colorTag = note?.colorTag,
+            colorTag = noteColorTag,
             tags = note?.tags ?: emptyList(),
         )
 
@@ -1527,6 +1902,56 @@ fun NoteEditScreen(
         )
     }
 
+    if (showCodeDialog) {
+        AlertDialog(
+            onDismissRequest = { showCodeDialog = false },
+            containerColor = SurfaceColor,
+            shape = RoundedCornerShape(16.dp),
+            title = { Text("Bloc de code", fontWeight = FontWeight.Medium) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Langage: $selectedCodeLanguage", color = accentColor, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                    OutlinedTextField(
+                        value = codeInput,
+                        onValueChange = { codeInput = it },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp),
+                        placeholder = { Text("Entre le code...", color = MutedColor) },
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(
+                            color = CodeDefaultText,
+                            fontFamily = FontFamily.Monospace,
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = accentColor,
+                            unfocusedBorderColor = BorderColor,
+                            focusedTextColor = CodeDefaultText,
+                            unfocusedTextColor = CodeDefaultText,
+                            cursorColor = accentColor,
+                            focusedContainerColor = CodeBlockBackground,
+                            unfocusedContainerColor = CodeBlockBackground,
+                        ),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    editorValue = buildCodeBlockInsertion(editorValue, selectedCodeLanguage, codeInput)
+                    showCodeDialog = false
+                    codeInput = ""
+                }) {
+                    Text("Inserer", color = accentColor, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showCodeDialog = false
+                    codeInput = ""
+                }) {
+                    Text("Annuler", color = MutedColor)
+                }
+            }
+        )
+    }
+
     if (showLockDialog) {
         PinInputDialog(
             title = "Verrouiller la note",
@@ -1547,7 +1972,10 @@ fun NoteEditScreen(
                             isLocked = true
                             showLockDialog = false
                             pinInput = ""
-                        }, onError = { pinError = true })
+                        }, onError = {
+                            pinError = true
+                            pinInput = ""
+                        })
                     }
                 } else pinError = true
             },
@@ -1579,7 +2007,10 @@ fun NoteEditScreen(
                             isUnlocked = true
                             showUnlockDialog = false
                             pinInput = ""
-                        }, onError = { pinError = true })
+                        }, onError = {
+                            pinError = true
+                            pinInput = ""
+                        })
                     }
                 } else pinError = true
             },
@@ -1613,7 +2044,10 @@ fun NoteEditScreen(
                             isUnlocked = false
                             showRemoveLock = false
                             pinInput = ""
-                        }, onError = { pinError = true })
+                        }, onError = {
+                            pinError = true
+                            pinInput = ""
+                        })
                     }
                 } else pinError = true
             },
@@ -1625,102 +2059,153 @@ fun NoteEditScreen(
         )
     }
 
-    Scaffold(
-        containerColor = BgColor,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            text = when {
-                                syncing -> "Sauvegarde..."
-                                isNewNote -> "Nouvelle note"
-                                synced -> "Enregistre"
-                                else -> "Modifie"
-                            },
-                            color = when {
-                                syncing -> MutedColor
-                                synced -> GreenColor
-                                else -> MutedColor
-                            },
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                        if (note != null) {
-                            Text(formatNoteDate(note.updatedAt), color = MutedColor, fontSize = 11.sp)
-                        }
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour", tint = TextColor)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceColor, titleContentColor = TextColor),
-                actions = {
-                    if (isNewNote) {
-                        TextButton(onClick = {
-                            val draftTitle = title.trim().ifBlank { "Sans titre" }
-                            if (draftTitle.isBlank() && editorValue.text.trim().isBlank()) {
-                                onBack()
-                            } else {
-                                syncing = true
-                                vm.createNote(draftTitle, editorValue.text) { newNote ->
-                                    savedId = newNote.id
-                                    syncing = false
-                                    synced = true
-                                }
-                            }
-                        }, enabled = !syncing) {
-                            Text("Enregistrer", color = accentColor, fontWeight = FontWeight.SemiBold)
-                        }
-                    } else {
-                        IconButton(onClick = { if (isLocked) showRemoveLock = true else showLockDialog = true }) {
-                            Icon(if (isLocked) Icons.Outlined.LockOpen else Icons.Default.Lock, contentDescription = "Verrou", tint = if (isLocked) accentColor else MutedColor)
-                        }
-                        Box {
-                            IconButton(onClick = { showMenu = true }) {
-                                Icon(Icons.Default.MoreVert, contentDescription = "Menu", tint = TextColor)
-                            }
-                            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }, containerColor = SurfaceColor) {
-                                DropdownMenuItem(text = { Text(if (readMode) "Mode ecriture" else "Mode lecture", color = TextColor) }, onClick = { readMode = !readMode; showMenu = false })
-                                HorizontalDivider(color = BorderColor)
-                                DropdownMenuItem(text = { Text("Epingler", color = TextColor) }, onClick = { savedId?.let { vm.togglePin(it) }; showMenu = false })
-                                DropdownMenuItem(text = { Text("Renommer", color = TextColor) }, onClick = { renameInput = title; showRenameDialog = true; showMenu = false })
-                                DropdownMenuItem(text = { Text("Rechercher", color = TextColor) }, onClick = { showSearchDialog = true; showMenu = false })
-                                DropdownMenuItem(text = { Text("Remplacer", color = TextColor) }, onClick = { showReplaceDialog = true; showMenu = false })
-                                HorizontalDivider(color = BorderColor)
-                                DropdownMenuItem(text = { Text("Supprimer", color = DangerColor) }, onClick = { showDeleteDialog = true; showMenu = false })
-                            }
-                        }
-                    }
-                }
-            )
+    fun saveNewNoteIfNeeded() {
+        val draftTitle = title.trim().ifBlank { "Sans titre" }
+        if (draftTitle.isBlank() && editorValue.text.trim().isBlank()) {
+            onBack()
+            return
         }
+        if (savedId != null) return
+        syncing = true
+        vm.createNote(draftTitle, editorValue.text) { newNote ->
+            savedId = newNote.id
+            syncing = false
+            synced = true
+            isPinned = newNote.isPinned
+            noteColorTag = newNote.colorTag
+        }
+    }
+
+    Scaffold(
+        containerColor = noteBackgroundColor,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            if (showContent) {
-                OutlinedTextField(
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(noteBackgroundColor)
+                .padding(padding)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.35f))
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour", tint = Color.White)
+                }
+
+                BasicTextField(
                     value = title,
                     onValueChange = {
                         title = it
                         if (savedId != null) scheduleSyncIfNeeded()
                     },
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                    textStyle = MaterialTheme.typography.titleLarge.copy(color = accentColor, fontWeight = FontWeight.SemiBold),
-                    placeholder = { Text("Titre", color = MutedColor) },
+                    modifier = Modifier.weight(1f),
+                    enabled = showContent,
+                    textStyle = MaterialTheme.typography.titleMedium.copy(
+                        color = Color.White,
+                        fontWeight = FontWeight.Medium,
+                    ),
                     singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color.Transparent,
-                        unfocusedBorderColor = Color.Transparent,
-                        focusedTextColor = accentColor,
-                        unfocusedTextColor = accentColor,
-                        cursorColor = accentColor,
-                    )
+                    cursorBrush = SolidColor(Color.White),
+                    decorationBox = { innerTextField ->
+                        if (title.isBlank()) {
+                            Text("Sans titre", color = Color.White.copy(alpha = 0.35f), fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                        }
+                        innerTextField()
+                    }
                 )
 
-                Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+                when {
+                    syncing -> Text("···", color = Color.White.copy(alpha = 0.35f), fontSize = 12.sp)
+                    synced -> Text("✓", color = Color.White.copy(alpha = 0.45f), fontSize = 12.sp)
+                }
+
+                if (isNewNote) {
+                    IconButton(onClick = { saveNewNoteIfNeeded() }, enabled = !syncing) {
+                        Icon(Icons.Default.Check, contentDescription = "Enregistrer", tint = Color.White)
+                    }
+                }
+
+                IconButton(
+                    onClick = {
+                        when {
+                            savedId == null -> ensureDraft {
+                                if (isLocked) showRemoveLock = true else showLockDialog = true
+                            }
+                            isLocked -> showRemoveLock = true
+                            else -> showLockDialog = true
+                        }
+                    }
+                ) {
+                    Icon(
+                        if (isLocked) Icons.Outlined.LockOpen else Icons.Default.Lock,
+                        contentDescription = "Verrou",
+                        tint = if (isLocked) Color(0xFFFFD86B) else Color.White.copy(alpha = 0.62f),
+                    )
+                }
+
+                Box {
+                    IconButton(onClick = { showMenu = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "Menu", tint = Color.White)
+                    }
+                    DropdownMenu(
+                        expanded = showMenu,
+                        onDismissRequest = { showMenu = false },
+                        containerColor = Color(0xFF252525),
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(if (readMode) "Mode écriture" else "Mode lecture", color = TextColor) },
+                            onClick = { readMode = !readMode; showMenu = false },
+                        )
+                        HorizontalDivider(color = BorderColor)
+                        DropdownMenuItem(
+                            text = { Text(if (isPinned) "Désépingler" else "Épingler", color = TextColor) },
+                            onClick = {
+                                if (savedId == null) {
+                                    ensureDraft { createdId ->
+                                        vm.togglePin(createdId)
+                                        isPinned = !isPinned
+                                    }
+                                } else {
+                                    savedId?.let { vm.togglePin(it) }
+                                    isPinned = !isPinned
+                                }
+                                showMenu = false
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Renommer", color = TextColor) },
+                            onClick = { renameInput = title; showRenameDialog = true; showMenu = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Rechercher", color = TextColor) },
+                            onClick = { showSearchDialog = true; showMenu = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Remplacer", color = TextColor) },
+                            onClick = { showReplaceDialog = true; showMenu = false },
+                        )
+                        HorizontalDivider(color = BorderColor)
+                        DropdownMenuItem(
+                            text = { Text("Supprimer", color = DangerColor) },
+                            onClick = { showDeleteDialog = true; showMenu = false },
+                        )
+                    }
+                }
+            }
+
+            if (showContent) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
                     if (readMode) {
                         Text(
                             text = renderedDocument.annotatedString,
@@ -1742,21 +2227,26 @@ fun NoteEditScreen(
                                             systemUriHandler.openUri(it.payload.orEmpty())
                                         }
                                     }
-                                }
+                                 }
                                 .padding(horizontal = 4.dp, vertical = 8.dp),
-                            style = MaterialTheme.typography.bodyLarge.copy(color = accentColor, lineHeight = 26.sp),
+                            style = MaterialTheme.typography.bodyLarge.copy(color = Color(0xFFE0E0E0), lineHeight = 26.sp),
                             onTextLayout = { readLayoutResult = it },
                         )
                     } else {
                         if (editorValue.text.isBlank()) {
-                            Text("Commence a ecrire...", color = MutedColor, fontSize = 16.sp, modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp))
+                            Text(
+                                "Commencez à écrire...",
+                                color = Color.White.copy(alpha = 0.22f),
+                                fontSize = 16.sp,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp)
+                            )
                         }
                         BasicTextField(
                             value = editorValue,
                             onValueChange = { editorValue = it },
                             modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp, vertical = 8.dp),
-                            textStyle = MaterialTheme.typography.bodyLarge.copy(color = accentColor, lineHeight = 26.sp),
-                            cursorBrush = SolidColor(accentColor),
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(color = Color(0xFFE0E0E0), lineHeight = 26.sp),
+                            cursorBrush = SolidColor(Color.White),
                             keyboardOptions = KeyboardOptions.Default.copy(imeAction = ImeAction.Default),
                             interactionSource = editorInteractionSource,
                             visualTransformation = editorVisualTransformation,
@@ -1809,22 +2299,43 @@ fun NoteEditScreen(
             } else {
                 Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Default.Lock, contentDescription = null, tint = MutedColor, modifier = Modifier.size(48.dp))
-                        Spacer(Modifier.height(12.dp))
-                        Text("Note verrouillee", color = MutedColor, fontSize = 16.sp)
-                        Spacer(Modifier.height(16.dp))
-                        Button(onClick = { showUnlockDialog = true }, colors = ButtonDefaults.buttonColors(containerColor = accentColor), shape = RoundedCornerShape(12.dp)) {
-                            Text("Entrer le PIN")
+                        Box(
+                            modifier = Modifier
+                                .size(80.dp)
+                                .background(Color(0x1AFFD600), CircleShape)
+                                .padding(20.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Icons.Default.Lock, contentDescription = null, tint = Color(0xB3FFD84D), modifier = Modifier.size(40.dp))
+                        }
+                        Spacer(Modifier.height(20.dp))
+                        Text("Note verrouillée", color = Color.White.copy(alpha = 0.72f), fontSize = 17.sp, fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.height(4.dp))
+                        Text("Entrez votre PIN pour accéder", color = Color.White.copy(alpha = 0.35f), fontSize = 13.sp)
+                        Spacer(Modifier.height(20.dp))
+                        Button(
+                            onClick = { showUnlockDialog = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0x26FFD600), contentColor = Color.White),
+                            shape = RoundedCornerShape(18.dp),
+                        ) {
+                            Text("Déverrouiller")
                         }
                     }
                 }
             }
 
-            HorizontalDivider(color = BorderColor.copy(alpha = 0.5f))
-            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("${title.length + renderedDocument.annotatedString.text.length} caracteres", color = MutedColor, fontSize = 12.sp)
+            HorizontalDivider(color = BorderColor.copy(alpha = 0.35f))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF171717))
+                    .padding(horizontal = 20.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("${editorValue.text.length} caractères", color = Color.White.copy(alpha = 0.38f), fontSize = 12.sp)
                 when {
-                    readMode -> Text("Mode lecture", color = accentColor, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                    readMode -> Text("Mode lecture", color = Color.White.copy(alpha = 0.55f), fontSize = 12.sp)
                     attachmentsBusy -> Text("Ajout piece jointe...", color = accentColor, fontSize = 12.sp)
                     syncing || !synced -> Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(color = accentColor, strokeWidth = 2.dp, modifier = Modifier.size(12.dp))
@@ -1848,7 +2359,12 @@ fun NoteEditScreen(
                     onBold = { editorValue = toggleInlineStyle(editorValue, renderedDocument, TokenKind.BOLD, "**", "**", "gras") },
                     onItalic = { editorValue = toggleInlineStyle(editorValue, renderedDocument, TokenKind.ITALIC, "*", "*", "italique") },
                     onStrike = { editorValue = toggleInlineStyle(editorValue, renderedDocument, TokenKind.STRIKE, "~~", "~~", "barre") },
-                    onCode = { editorValue = toggleInlineStyle(editorValue, renderedDocument, TokenKind.CODE, "`", "`", "code") },
+                    codeLanguages = SupportedCodeLanguages,
+                    onCodeLanguageSelected = { language ->
+                        selectedCodeLanguage = language
+                        codeInput = selectedText(editorValue)
+                        showCodeDialog = true
+                    },
                     onBulletList = { editorValue = toggleBulletList(editorValue) },
                     onNumberList = { editorValue = toggleNumberedList(editorValue) },
                     onTab = { editorValue = insertAtSelection(editorValue, "    ") },
@@ -1870,11 +2386,13 @@ private fun FormatToolbar(
     onBold: () -> Unit,
     onItalic: () -> Unit,
     onStrike: () -> Unit,
-    onCode: () -> Unit,
+    codeLanguages: List<String>,
+    onCodeLanguageSelected: (String) -> Unit,
     onBulletList: () -> Unit,
     onNumberList: () -> Unit,
     onTab: () -> Unit,
 ) {
+    var showCodeMenu by remember { mutableStateOf(false) }
     Row(modifier = Modifier.fillMaxWidth().background(SurfaceColor).horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         TbIcon(Icons.AutoMirrored.Filled.Undo, "Annuler", onUndo)
         TbIcon(Icons.AutoMirrored.Filled.Redo, "Refaire", onRedo)
@@ -1883,7 +2401,31 @@ private fun FormatToolbar(
         TbText("B", onBold, bold = true)
         TbText("I", onItalic, italic = true)
         TbText("S", onStrike)
-        TbIcon(Icons.Default.Code, "Code", onCode)
+        Box {
+            TbIcon(Icons.Default.Code, "Code", onClick = { showCodeMenu = true })
+            DropdownMenu(
+                expanded = showCodeMenu,
+                onDismissRequest = { showCodeMenu = false },
+                containerColor = SurfaceColor,
+                modifier = Modifier.heightIn(max = 320.dp)
+            ) {
+                codeLanguages.forEach { language ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                language,
+                                color = TextColor,
+                                fontFamily = FontFamily.Monospace,
+                            )
+                        },
+                        onClick = {
+                            showCodeMenu = false
+                            onCodeLanguageSelected(language)
+                        }
+                    )
+                }
+            }
+        }
         TbSep()
         TbIcon(Icons.Default.Link, "Lien", onLink)
         TbText("#", onTag)
@@ -1913,6 +2455,20 @@ private fun TbText(label: String, onClick: () -> Unit, bold: Boolean = false, it
 @Composable
 private fun TbSep() {
     Box(modifier = Modifier.width(1.dp).height(22.dp).background(BorderColor))
+}
+
+private fun editorNoteBackgroundColor(colorTag: String?): Color {
+    return when (colorTag?.trim()?.lowercase()) {
+        null, "", "default" -> Color(0xFF1F1F1F)
+        "forest", "foret" -> Color(0xFF1A3A1F)
+        "amber", "ambre" -> Color(0xFF3A2F1A)
+        "ocean", "océan" -> Color(0xFF1A2F3A)
+        "violet" -> Color(0xFF2A1A3A)
+        "bordeaux" -> Color(0xFF3A1A2F)
+        "slate", "ardoise" -> Color(0xFF1E2A2A)
+        "rust", "rouille" -> Color(0xFF3A1F1A)
+        else -> Color(0xFF1F1F1F)
+    }
 }
 
 @Composable
@@ -2008,33 +2564,148 @@ private fun PinInputDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = SurfaceColor,
-        shape = RoundedCornerShape(16.dp),
-        title = { Text(title, fontWeight = FontWeight.Medium) },
-        text = {
-            Column {
-                Text(subtitle, color = MutedColor, fontSize = 13.sp, modifier = Modifier.padding(bottom = 12.dp))
-                OutlinedTextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                    placeholder = { Text("_ _ _ _", color = MutedColor) },
-                    isError = error,
-                    supportingText = if (error) ({ Text("PIN incorrect", color = DangerColor) }) else null,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = accentColor,
-                        unfocusedBorderColor = BorderColor,
-                        focusedTextColor = TextColor,
-                        unfocusedTextColor = TextColor,
-                        cursorColor = accentColor,
-                    )
-                )
-            }
-        },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("Confirmer", color = accentColor, fontWeight = FontWeight.SemiBold) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler", color = MutedColor) } }
+    var shakeIt by remember { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
+    val shakeOffset by animateFloatAsState(
+        targetValue = if (shakeIt) 10f else 0f,
+        animationSpec = spring(dampingRatio = 0.3f, stiffness = 800f),
+        finishedListener = { shakeIt = false },
+        label = "notePinShake",
     )
+
+    LaunchedEffect(error) {
+        if (error) {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            shakeIt = true
+        }
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = SurfaceColor),
+        ) {
+            Column(
+                modifier = Modifier.padding(28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = title.uppercase(),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    color = MutedColor,
+                    letterSpacing = 2.sp,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(subtitle, fontSize = 13.sp, color = MutedColor, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(28.dp))
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    modifier = Modifier.graphicsLayer { translationX = shakeOffset },
+                ) {
+                    repeat(4) { index ->
+                        val filled = index < value.length
+                        Box(
+                            modifier = Modifier
+                                .size(13.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    when {
+                                        shakeIt -> DangerColor
+                                        filled -> accentColor
+                                        else -> Color.Transparent
+                                    }
+                                )
+                                .border(
+                                    2.dp,
+                                    when {
+                                        shakeIt -> DangerColor
+                                        filled -> accentColor
+                                        else -> BorderColor
+                                    },
+                                    CircleShape,
+                                )
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(32.dp))
+
+                val keys = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "⌫")
+                keys.chunked(3).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        row.forEach { key ->
+                            NotePinKey(
+                                label = key,
+                                enabled = key.isNotEmpty(),
+                                isDelete = key == "⌫",
+                                onClick = {
+                                    when (key) {
+                                        "⌫" -> if (value.isNotEmpty()) onValueChange(value.dropLast(1))
+                                        "" -> Unit
+                                        else -> {
+                                            if (value.length < 4) {
+                                                val newValue = value + key
+                                                onValueChange(newValue)
+                                                if (newValue.length == 4) {
+                                                    onConfirm()
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                }
+
+                if (error) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "PIN incorrect",
+                        color = DangerColor,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                    )
+                }
+
+                Spacer(Modifier.height(10.dp))
+                TextButton(onClick = onDismiss) {
+                    Text("Annuler", color = MutedColor)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NotePinKey(
+    label: String,
+    enabled: Boolean,
+    isDelete: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(74.dp, 54.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (enabled) Surface2Color else Color.Transparent)
+            .border(
+                width = if (enabled) 1.dp else 0.dp,
+                color = if (enabled) BorderColor else Color.Transparent,
+                shape = RoundedCornerShape(12.dp),
+            )
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 20.sp,
+            color = if (isDelete) DangerColor else TextColor,
+            textAlign = TextAlign.Center,
+        )
+    }
 }

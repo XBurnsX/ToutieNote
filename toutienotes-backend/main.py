@@ -187,6 +187,9 @@ class NoteIn(BaseModel):
     title:   str = ""
     content: str = ""
 
+class NoteColorUpdate(BaseModel):
+    color_tag: str | None = None
+
 class NoteLock(BaseModel):
     pin: str
 
@@ -657,6 +660,24 @@ def update_note(note_id: str, note: NoteIn, user: dict = Depends(get_current_use
     db.commit()
     db.close()
     return {"id": note_id, "updated_at": now}
+
+@app.put("/api/notes/{note_id}/color")
+def update_note_color(note_id: str, data: NoteColorUpdate, user: dict = Depends(get_current_user)):
+    db = get_db()
+    now = datetime.utcnow().isoformat()
+    color_tag = (data.color_tag or "").strip() or None
+    cur = db.execute(
+        "UPDATE notes SET color_tag=?, updated_at=? WHERE id=? AND (user_id=? OR user_id IS NULL)",
+        (color_tag, now, note_id, user["id"])
+    )
+    if cur.rowcount == 0:
+        db.close()
+        raise HTTPException(404, "Note introuvable")
+    db.commit()
+    row = db.execute("SELECT * FROM notes WHERE id=?", (note_id,)).fetchone()
+    payload = _serialize_note(row, db)
+    db.close()
+    return payload
 
 @app.delete("/api/notes/{note_id}")
 def delete_note(note_id: str, user: dict = Depends(get_current_user)):

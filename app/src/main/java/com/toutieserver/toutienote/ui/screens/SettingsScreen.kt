@@ -388,8 +388,6 @@ fun SettingsScreen(
                     SettingsInfoRow("Version", "1.0.0")
                     HorizontalDivider(color = BorderColor, modifier = Modifier.padding(horizontal = 16.dp))
                     SettingsInfoRow("Serveur", "toutieserver.com")
-                    HorizontalDivider(color = BorderColor, modifier = Modifier.padding(horizontal = 16.dp))
-                    SettingsInfoRow("Fond", "#0f0f0f")
                 }
             }
 

@@ -132,6 +132,21 @@ class NotesViewModel : ViewModel() {
         }
     }
 
+    fun updateNoteColor(id: String, colorTag: String?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _notes.value = _notes.value.map {
+                if (it.id == id) it.copy(colorTag = colorTag) else it
+            }
+            try {
+                val updated = ApiService.updateNoteColor(id, colorTag)
+                _notes.value = _notes.value.map {
+                    if (it.id == id) it.copy(colorTag = updated.colorTag, updatedAt = updated.updatedAt) else it
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     fun lockNote(id: String, pin: String, onSuccess: () -> Unit, onError: () -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
